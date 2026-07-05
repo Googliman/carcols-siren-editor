@@ -4,6 +4,9 @@ Not part of the distributed app - lets the developer bump the app version and
 push source + cut a new GitHub release in one click. Requires git and the
 GitHub CLI (gh) to be installed and authenticated on this machine.
 
+This file can live anywhere (e.g. copied to the Desktop for quick access) - it
+always operates on PROJECT_DIR below, regardless of where it's actually run from.
+
 Run with: python dev_tool.py
 """
 from __future__ import annotations
@@ -15,9 +18,12 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
+PROJECT_DIR = r"C:\Users\ozias\OneDrive\claude Code\GTAV Carcols Vehicle program"
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
+
 from settings_store import DEFAULT_APP_VERSION, GITHUB_REPO, load_settings, save_settings
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 EXE_NAME = "CarcolsSirenEditorAlpha"
 DESKTOP_EXE_PATH = os.path.join(os.path.expanduser("~"), "Desktop", f"{EXE_NAME}.exe")
 DIST_EXE_PATH = os.path.join(PROJECT_DIR, "dist", f"{EXE_NAME}.exe")
