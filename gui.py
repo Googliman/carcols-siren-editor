@@ -487,17 +487,8 @@ class CarcolsEditorApp:
             return
         self._update_button_shown = True
 
-        # Windows renders the native menu bar itself, so per-item foreground colors on
-        # menu entries are ignored there - use a real widget instead so green actually shows.
-        btn = tk.Button(
-            self.update_bar,
-            text="Update",
-            fg="#008000",
-            relief=tk.FLAT,
-            cursor="hand2",
-            command=lambda: webbrowser.open(release_url),
-        )
-        btn.pack(side=tk.LEFT, padx=8, pady=2)
+        btn = ttk.Button(self.update_bar, text="Update", command=lambda: webbrowser.open(release_url))
+        btn.pack(side=tk.LEFT, padx=8, pady=4)
         self.update_bar.pack(fill=tk.X, side=tk.TOP, before=self.paned)
 
     def _build_menu(self) -> None:
