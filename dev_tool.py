@@ -33,8 +33,16 @@ from settings_store import DEFAULT_APP_VERSION, GITHUB_REPO, load_settings, save
 EXE_NAME = "CarcolsSirenEditorAlpha"
 DESKTOP_DIR = os.path.join(os.path.expanduser("~"), "Desktop", EXE_NAME)
 DESKTOP_SHORTCUT = os.path.join(os.path.expanduser("~"), "Desktop", "Carcols Siren Editor.lnk")
-DIST_DIR = os.path.join(PROJECT_DIR, "dist", EXE_NAME)
-DIST_ZIP_PATH = os.path.join(PROJECT_DIR, "dist", f"{EXE_NAME}.zip")
+
+# PyInstaller builds outside PROJECT_DIR, not into it - PROJECT_DIR lives inside OneDrive,
+# whose sync client transiently locks freshly-written files (onedir builds create thousands
+# of small files very quickly, e.g. Tcl/Tk data), causing intermittent "Access is denied"
+# errors mid-build. Building into a plain local folder avoids that race entirely.
+BUILD_STAGING_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "CarcolsSirenEditorBuild")
+BUILD_DIST_DIR = os.path.join(BUILD_STAGING_DIR, "dist")
+BUILD_WORK_DIR = os.path.join(BUILD_STAGING_DIR, "build")
+DIST_DIR = os.path.join(BUILD_DIST_DIR, EXE_NAME)
+DIST_ZIP_PATH = os.path.join(BUILD_STAGING_DIR, f"{EXE_NAME}.zip")
 
 _GH_CANDIDATES = [r"C:\Program Files\GitHub CLI\gh.exe", "gh"]
 GH = next((p for p in _GH_CANDIDATES if p == "gh" or os.path.exists(p)), "gh")
@@ -215,11 +223,11 @@ class DevToolApp:
 
         self._log(f"No release exists yet for {tag} - building and publishing one...")
         self._log("Running PyInstaller (this can take a minute)...")
-        shutil.rmtree(DIST_DIR, ignore_errors=True)
+        shutil.rmtree(BUILD_STAGING_DIR, ignore_errors=True)
         code, out = run_command([
             sys.executable, "-m", "PyInstaller", "--onedir", "--windowed", "--noconfirm",
-            "--name", EXE_NAME, "--distpath", "./dist", "--workpath", "./build",
-            "--specpath", "./build", "main.py",
+            "--name", EXE_NAME, "--distpath", BUILD_DIST_DIR, "--workpath", BUILD_WORK_DIR,
+            "--specpath", BUILD_WORK_DIR, "main.py",
         ])
         self._log(out[-3000:])
         if code != 0:
