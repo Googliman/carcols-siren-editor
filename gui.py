@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import subprocess
+import sys
+import tempfile
 import threading
 import tkinter as tk
 import urllib.error
@@ -34,7 +38,8 @@ SIREN_TEXTURE_OPTIONS = ["VehicleLight_sirenlight", "VehicleLight_searchlight", 
 
 def _fetch_latest_release():
     """Unauthenticated call to GitHub's public API - no token needed since the repo
-    is public. Returns (tag_name, html_url) or None if unreachable/no releases yet."""
+    is public. Returns (tag_name, html_url, asset_url) or None if unreachable/no
+    releases yet. asset_url is None if the release has no .exe attached."""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                 "User-Agent": "CarcolsSirenEditor"})
@@ -44,7 +49,12 @@ def _fetch_latest_release():
     html_url = data.get("html_url")
     if not tag_name or not html_url:
         return None
-    return tag_name, html_url
+    asset_url = None
+    for asset in data.get("assets", []):
+        if asset.get("name", "").lower().endswith(".exe"):
+            asset_url = asset.get("browser_download_url")
+            break
+    return tag_name, html_url, asset_url
 
 
 def _is_valid_color_list(colors) -> bool:
@@ -439,20 +449,107 @@ class CarcolsEditorApp:
                 return
             if result is None:
                 return
-            tag_name, html_url = result
-            self.root.after(0, lambda: self._maybe_show_update_button(tag_name, html_url))
+            tag_name, html_url, asset_url = result
+            self.root.after(0, lambda: self._maybe_show_update_button(tag_name, html_url, asset_url))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _maybe_show_update_button(self, latest_tag: str, release_url: str) -> None:
+    def _maybe_show_update_button(self, latest_tag: str, release_url: str, asset_url) -> None:
         latest_version = latest_tag.lstrip("vV")
         if latest_version == self.app_version or self._update_button_shown:
             return
         self._update_button_shown = True
 
-        btn = ttk.Button(self.update_bar, text="Update", command=lambda: webbrowser.open(release_url))
+        btn = ttk.Button(
+            self.update_bar, text="Update",
+            command=lambda: self._open_update_choice_window(latest_tag, release_url, asset_url),
+        )
         btn.pack(side=tk.LEFT, padx=8, pady=4)
         self.update_bar.pack(fill=tk.X, side=tk.TOP, before=self.paned)
+
+    def _open_update_choice_window(self, latest_tag: str, release_url: str, asset_url) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("Update Available")
+        win.resizable(False, False)
+
+        ttk.Label(win, text=f"A new version is available: {latest_tag}",
+                  font=("Segoe UI", 10, "bold")).pack(padx=20, pady=(20, 4))
+        ttk.Label(win, text=f"You're currently on {self.app_version}.").pack(padx=20, pady=(0, 16))
+
+        button_frame = ttk.Frame(win)
+        button_frame.pack(pady=(0, 8))
+        ttk.Button(button_frame, text="Download", command=lambda: webbrowser.open(release_url)).pack(
+            side=tk.LEFT, padx=(0, 8))
+        install_btn = ttk.Button(
+            button_frame, text="Install",
+            command=lambda: self._start_auto_install(asset_url, win),
+        )
+        install_btn.pack(side=tk.LEFT)
+
+        if not getattr(sys, "frozen", False):
+            install_btn.configure(state="disabled")
+            ttk.Label(win, text="Auto-install only works in the compiled app, not when run from "
+                                 "source - use Download instead.",
+                      foreground="#a00000", wraplength=280).pack(padx=20, pady=(0, 16))
+        elif not asset_url:
+            install_btn.configure(state="disabled")
+            ttk.Label(win, text="This release has no attached exe to install automatically - "
+                                 "use Download instead.",
+                      foreground="#a00000", wraplength=280).pack(padx=20, pady=(0, 16))
+        else:
+            ttk.Frame(win).pack(pady=(0, 12))
+
+    def _start_auto_install(self, asset_url: str, choice_win: tk.Toplevel) -> None:
+        choice_win.destroy()
+
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("Installing Update")
+        progress_win.resizable(False, False)
+        ttk.Label(progress_win, text="Downloading update...").pack(padx=30, pady=30)
+        progress_win.update()
+
+        def worker():
+            try:
+                current_exe = sys.executable
+                new_exe_path = os.path.join(tempfile.gettempdir(), "CarcolsSirenEditorAlpha_new.exe")
+                urllib.request.urlretrieve(asset_url, new_exe_path)
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                self.root.after(0, lambda: self._install_failed(progress_win, str(exc)))
+                return
+            self.root.after(0, lambda: self._finish_install(progress_win, current_exe, new_exe_path))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _install_failed(self, progress_win: tk.Toplevel, message: str) -> None:
+        progress_win.destroy()
+        messagebox.showerror("Update failed", f"Could not download the update:\n{message}")
+
+    def _finish_install(self, progress_win: tk.Toplevel, current_exe: str, new_exe_path: str) -> None:
+        progress_win.destroy()
+        pid = os.getpid()
+        batch_path = os.path.join(tempfile.gettempdir(), "carcols_update.bat")
+        # Fully-qualify tasklist/find/timeout with %SystemRoot%\System32 rather than relying
+        # on bare command names resolving correctly via PATH - confirmed via testing that a
+        # Unix "find" earlier in PATH (e.g. from Git for Windows) silently shadows the real
+        # find.exe here, which breaks the wait-for-exit check instead of erroring loudly.
+        batch_contents = (
+            "@echo off\r\n"
+            ":wait\r\n"
+            f'"%SystemRoot%\\System32\\tasklist.exe" /FI "PID eq {pid}" 2>NUL '
+            f'| "%SystemRoot%\\System32\\find.exe" "{pid}" >NUL\r\n'
+            "if not errorlevel 1 (\r\n"
+            '    "%SystemRoot%\\System32\\timeout.exe" /t 1 /nobreak >NUL\r\n'
+            "    goto wait\r\n"
+            ")\r\n"
+            f'copy /Y "{new_exe_path}" "{current_exe}" >NUL\r\n'
+            f'start "" "{current_exe}"\r\n'
+            f'del "{new_exe_path}"\r\n'
+            'del "%~f0"\r\n'
+        )
+        with open(batch_path, "w", encoding="utf-8") as f:
+            f.write(batch_contents)
+        subprocess.Popen(["cmd", "/c", batch_path], creationflags=subprocess.CREATE_NO_WINDOW)
+        self.root.quit()
 
     def _build_menu(self) -> None:
         self.menubar = tk.Menu(self.root, tearoff=0)
