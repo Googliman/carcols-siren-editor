@@ -487,14 +487,18 @@ class CarcolsEditorApp:
             return
         self._update_button_shown = True
 
-        version_index = self.menubar.index("Version")
-        self.menubar.insert_command(
-            version_index + 1,
-            label="Update",
-            foreground="#008000",
-            activeforeground="#008000",
+        # Windows renders the native menu bar itself, so per-item foreground colors on
+        # menu entries are ignored there - use a real widget instead so green actually shows.
+        btn = tk.Button(
+            self.update_bar,
+            text="Update",
+            fg="#008000",
+            relief=tk.FLAT,
+            cursor="hand2",
             command=lambda: webbrowser.open(release_url),
         )
+        btn.pack(side=tk.LEFT, padx=8, pady=2)
+        self.update_bar.pack(fill=tk.X, side=tk.TOP, before=self.paned)
 
     def _build_menu(self) -> None:
         self.menubar = tk.Menu(self.root, tearoff=0)
@@ -512,8 +516,11 @@ class CarcolsEditorApp:
         self.root.config(menu=self.menubar)
 
     def _build_layout(self) -> None:
+        self.update_bar = tk.Frame(self.root)
+
         paned = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
+        self.paned = paned
 
         left_frame = ttk.Frame(paned, width=250)
         paned.add(left_frame, weight=1)
