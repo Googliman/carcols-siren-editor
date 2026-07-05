@@ -457,6 +457,7 @@ class CarcolsEditorApp:
         self.app_version = saved.get("app_version") if isinstance(saved.get("app_version"), str) else DEFAULT_APP_VERSION
         self._settings_window = None
         self._dev_change_version_unlocked = False
+        self._update_button_shown = False
 
         self._build_menu()
         self._build_layout()
@@ -476,28 +477,24 @@ class CarcolsEditorApp:
             if result is None:
                 return
             tag_name, html_url = result
-            self.root.after(0, lambda: self._maybe_show_update_notice(tag_name, html_url))
+            self.root.after(0, lambda: self._maybe_show_update_button(tag_name, html_url))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _maybe_show_update_notice(self, latest_tag: str, release_url: str) -> None:
+    def _maybe_show_update_button(self, latest_tag: str, release_url: str) -> None:
         latest_version = latest_tag.lstrip("vV")
-        if latest_version == self.app_version:
+        if latest_version == self.app_version or self._update_button_shown:
             return
+        self._update_button_shown = True
 
-        win = tk.Toplevel(self.root)
-        win.title("Update Available")
-        win.resizable(False, False)
-
-        ttk.Label(win, text=f"A new version is available: {latest_tag}",
-                  font=("Segoe UI", 10, "bold")).pack(padx=20, pady=(16, 4))
-        ttk.Label(win, text=f"You're currently on {self.app_version}.").pack(padx=20, pady=(0, 12))
-
-        button_frame = ttk.Frame(win)
-        button_frame.pack(pady=(0, 16))
-        ttk.Button(button_frame, text="Open Release Page",
-                   command=lambda: webbrowser.open(release_url)).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(button_frame, text="Dismiss", command=win.destroy).pack(side=tk.LEFT)
+        version_index = self.menubar.index("Version")
+        self.menubar.insert_command(
+            version_index + 1,
+            label="Update",
+            foreground="#008000",
+            activeforeground="#008000",
+            command=lambda: webbrowser.open(release_url),
+        )
 
     def _build_menu(self) -> None:
         self.menubar = tk.Menu(self.root, tearoff=0)
