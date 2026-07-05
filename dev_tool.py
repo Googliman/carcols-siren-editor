@@ -32,6 +32,26 @@ DIST_EXE_PATH = os.path.join(PROJECT_DIR, "dist", f"{EXE_NAME}.exe")
 _GH_CANDIDATES = [r"C:\Program Files\GitHub CLI\gh.exe", "gh"]
 GH = next((p for p in _GH_CANDIDATES if p == "gh" or os.path.exists(p)), "gh")
 
+# gh's normal keyring-based login doesn't always get picked up when gh is launched as a
+# subprocess of a Python GUI script (a Windows/keyring quirk, not specific to this repo).
+# As a fallback, a token saved here gets passed via the GH_TOKEN env var instead, which
+# bypasses the keyring lookup entirely. Lives outside the project folder, never committed.
+TOKEN_PATH = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "CarcolsSirenEditor", "dev_gh_token.txt")
+
+
+def load_gh_token() -> str:
+    try:
+        with open(TOKEN_PATH, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def save_gh_token(token: str) -> None:
+    os.makedirs(os.path.dirname(TOKEN_PATH), exist_ok=True)
+    with open(TOKEN_PATH, "w", encoding="utf-8") as f:
+        f.write(token.strip())
+
 # A version string becomes part of a git tag (vX.Y.Z), so it can't contain spaces or
 # other characters git refs disallow. Spaces are common typos (e.g. "0.1.2 alpha"
 # instead of "0.1.2-alpha") - normalize those to hyphens rather than just rejecting them.
@@ -42,10 +62,19 @@ def normalize_version(raw: str) -> str:
     return re.sub(r"\s+", "-", raw.strip())
 
 
-def run_command(args: list) -> tuple:
-    result = subprocess.run(args, cwd=PROJECT_DIR, capture_output=True, text=True)
+def run_command(args: list, extra_env: dict = None) -> tuple:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    result = subprocess.run(args, cwd=PROJECT_DIR, capture_output=True, text=True, env=env)
     output = (result.stdout or "") + (result.stderr or "")
     return result.returncode, output.strip()
+
+
+def run_gh(args: list) -> tuple:
+    token = load_gh_token()
+    extra_env = {"GH_TOKEN": token} if token else None
+    return run_command([GH] + args, extra_env=extra_env)
 
 
 class DevToolApp:
@@ -69,6 +98,19 @@ class DevToolApp:
             foreground="#555555",
         ).pack(side=tk.RIGHT)
 
+        token_frame = ttk.Frame(root)
+        token_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ttk.Label(token_frame, text="GitHub Token:").pack(side=tk.LEFT)
+        self.token_var = tk.StringVar()
+        ttk.Entry(token_frame, textvariable=self.token_var, show="*", width=30).pack(side=tk.LEFT, padx=(6, 6))
+        ttk.Button(token_frame, text="Save Token", command=self.save_token).pack(side=tk.LEFT)
+        ttk.Label(
+            token_frame,
+            text="Only needed if 'Push to GitHub' fails with a gh auth error. Get one from "
+                 "github.com > Settings > Developer settings > Personal access tokens (repo scope).",
+            foreground="#555555",
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
         action_frame = ttk.Frame(root)
         action_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
         self.push_button = ttk.Button(action_frame, text="Push to GitHub", command=self.push_to_github)
@@ -82,6 +124,15 @@ class DevToolApp:
 
         self.log = scrolledtext.ScrolledText(root, wrap=tk.WORD, state="disabled")
         self.log.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+    def save_token(self) -> None:
+        token = self.token_var.get().strip()
+        if not token:
+            messagebox.showerror("Empty token", "Paste a GitHub personal access token first.")
+            return
+        save_gh_token(token)
+        self.token_var.set("")
+        self.log_line("GitHub token saved locally - it'll be used automatically for gh commands from now on.")
 
     def log_line(self, text: str) -> None:
         self.log.configure(state="normal")
@@ -149,7 +200,7 @@ class DevToolApp:
         # Check the actual GitHub release, not local git refs - "gh release create" can
         # publish a release/tag on the remote without ever creating a local tag ref, so
         # checking local refs alone can wrongly think no release exists yet.
-        code, _ = run_command([GH, "release", "view", tag])
+        code, _ = run_gh(["release", "view", tag])
         if code == 0:
             self._log(f"Release {tag} already exists on GitHub - no new one needed. Done.")
             self._done()
@@ -179,8 +230,8 @@ class DevToolApp:
             return
 
         self._log("Creating the GitHub release...")
-        code, out = run_command([GH, "release", "create", tag, DIST_EXE_PATH,
-                                  "--title", tag, "--notes", f"Release {tag}"])
+        code, out = run_gh(["release", "create", tag, DIST_EXE_PATH,
+                            "--title", tag, "--notes", f"Release {tag}"])
         self._log(out)
         if code != 0:
             self._log("Release creation failed - check the output above.")
