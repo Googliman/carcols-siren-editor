@@ -485,7 +485,7 @@ class CarcolsEditorApp:
             side=tk.LEFT, padx=(0, 8))
         install_btn = ttk.Button(
             button_frame, text="Install",
-            command=lambda: self._start_auto_install(asset_url, win),
+            command=lambda: self._start_auto_install(latest_tag, asset_url, win),
         )
         install_btn.pack(side=tk.LEFT)
 
@@ -502,7 +502,7 @@ class CarcolsEditorApp:
         else:
             ttk.Frame(win).pack(pady=(0, 12))
 
-    def _start_auto_install(self, asset_url: str, choice_win: tk.Toplevel) -> None:
+    def _start_auto_install(self, latest_tag: str, asset_url: str, choice_win: tk.Toplevel) -> None:
         choice_win.destroy()
 
         progress_win = tk.Toplevel(self.root)
@@ -536,7 +536,7 @@ class CarcolsEditorApp:
             except (urllib.error.URLError, OSError, ValueError, zipfile.BadZipFile) as exc:
                 self.root.after(0, lambda: self._install_failed(progress_win, str(exc)))
                 return
-            self.root.after(0, lambda: self._finish_install(progress_win, install_dir, staged_app_dir))
+            self.root.after(0, lambda: self._finish_install(latest_tag, progress_win, install_dir, staged_app_dir))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -544,8 +544,19 @@ class CarcolsEditorApp:
         progress_win.destroy()
         messagebox.showerror("Update failed", f"Could not download the update:\n{message}")
 
-    def _finish_install(self, progress_win: tk.Toplevel, install_dir: str, staged_app_dir: str) -> None:
+    def _finish_install(self, latest_tag: str, progress_win: tk.Toplevel, install_dir: str,
+                         staged_app_dir: str) -> None:
         progress_win.destroy()
+
+        # The swap below only replaces files on disk - it doesn't touch the app_version
+        # stored in settings.json, which is what the Version popup and update-check compare
+        # against. Update it now so the relaunched app correctly reports itself as current
+        # instead of looking like the install did nothing.
+        new_version = latest_tag.lstrip("vV")
+        data = load_settings()
+        data["app_version"] = new_version
+        save_settings(data)
+
         pid = os.getpid()
         exe_name = os.path.basename(sys.executable)
         backup_dir = install_dir + "_old_update"
