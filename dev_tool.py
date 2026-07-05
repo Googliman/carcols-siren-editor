@@ -217,7 +217,7 @@ class DevToolApp:
         self._log("Running PyInstaller (this can take a minute)...")
         shutil.rmtree(DIST_DIR, ignore_errors=True)
         code, out = run_command([
-            sys.executable, "-m", "PyInstaller", "--onedir", "--windowed",
+            sys.executable, "-m", "PyInstaller", "--onedir", "--windowed", "--noconfirm",
             "--name", EXE_NAME, "--distpath", "./dist", "--workpath", "./build",
             "--specpath", "./build", "main.py",
         ])
