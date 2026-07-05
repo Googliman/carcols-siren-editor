@@ -12,6 +12,7 @@ Run with: python dev_tool.py
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -30,6 +31,15 @@ DIST_EXE_PATH = os.path.join(PROJECT_DIR, "dist", f"{EXE_NAME}.exe")
 
 _GH_CANDIDATES = [r"C:\Program Files\GitHub CLI\gh.exe", "gh"]
 GH = next((p for p in _GH_CANDIDATES if p == "gh" or os.path.exists(p)), "gh")
+
+# A version string becomes part of a git tag (vX.Y.Z), so it can't contain spaces or
+# other characters git refs disallow. Spaces are common typos (e.g. "0.1.2 alpha"
+# instead of "0.1.2-alpha") - normalize those to hyphens rather than just rejecting them.
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
+
+
+def normalize_version(raw: str) -> str:
+    return re.sub(r"\s+", "-", raw.strip())
 
 
 def run_command(args: list) -> tuple:
@@ -80,10 +90,15 @@ class DevToolApp:
         self.log.configure(state="disabled")
 
     def save_version(self) -> None:
-        version = self.version_var.get().strip()
-        if not version:
-            messagebox.showerror("Invalid version", "Version can't be empty.")
+        version = normalize_version(self.version_var.get())
+        if not version or not VERSION_RE.match(version):
+            messagebox.showerror(
+                "Invalid version",
+                "Version can only contain letters, numbers, dots, and hyphens (e.g. "
+                "0.1.2-alpha) - no spaces or other symbols, since it becomes a git tag.",
+            )
             return
+        self.version_var.set(version)
         data = load_settings()
         data["app_version"] = version
         save_settings(data)
@@ -100,11 +115,22 @@ class DevToolApp:
         self.root.after(0, lambda: self.push_button.configure(state="normal"))
 
     def _push_worker(self) -> None:
-        version = self.version_var.get().strip()
-        if not version:
-            self._log("Version field is empty - aborting.")
+        version = normalize_version(self.version_var.get())
+        if not version or not VERSION_RE.match(version):
+            self._log(
+                f"'{self.version_var.get()}' isn't a valid version (letters/numbers/dots/"
+                f"hyphens only, e.g. 0.1.2-alpha) - fix the Version field and try again."
+            )
             self._done()
             return
+        self.root.after(0, self.version_var.set, version)
+
+        # Keep the persisted version in sync with what's about to be tagged/released,
+        # even if "Save Version" was never clicked separately.
+        data = load_settings()
+        data["app_version"] = version
+        save_settings(data)
+
         tag = f"v{version}"
 
         self._log("Staging changes...")
