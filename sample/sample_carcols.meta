@@ -1,0 +1,108 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<CVehicleModelInfoVarGlobal>
+  <Sirens>
+    <Item>
+      <id value="99" />
+      <name>Sample Imported Siren</name>
+      <timeMultiplier value="1.0" />
+      <lightFalloffMax value="25.0" />
+      <lightFalloffExponent value="30.0" />
+      <lightInnerConeAngle value="4.5" />
+      <lightOuterConeAngle value="30.0" />
+      <lightOffset value="0.0" />
+      <textureName>VehicleLight_sirenlight</textureName>
+      <sequencerBpm value="600" />
+      <leftHeadLight>
+        <sequencer value="0" />
+      </leftHeadLight>
+      <rightHeadLight>
+        <sequencer value="0" />
+      </rightHeadLight>
+      <leftTailLight>
+        <sequencer value="0" />
+      </leftTailLight>
+      <rightTailLight>
+        <sequencer value="0" />
+      </rightTailLight>
+      <leftHeadLightMultiples value="1" />
+      <rightHeadLightMultiples value="1" />
+      <leftTailLightMultiples value="1" />
+      <rightTailLightMultiples value="1" />
+      <useRealLights value="true" />
+      <sirens>
+        <Item>
+          <rotation>
+            <delta value="0.0" />
+            <start value="0.0" />
+            <speed value="0.8" />
+            <sequencer value="4294967295" />
+            <multiples value="1" />
+            <direction value="true" />
+            <syncToBpm value="true" />
+          </rotation>
+          <flashiness>
+            <delta value="0.0" />
+            <start value="0.0" />
+            <speed value="1.0" />
+            <sequencer value="4294967295" />
+            <multiples value="1" />
+            <direction value="true" />
+            <syncToBpm value="true" />
+          </flashiness>
+          <corona>
+            <intensity value="0.0" />
+            <size value="0.0" />
+            <pull value="0.0" />
+            <faceCamera value="false" />
+          </corona>
+          <color value="0xFFFF0000" />
+          <intensity value="1.2" />
+          <lightGroup value="0" />
+          <rotate value="true" />
+          <scale value="false" />
+          <scaleFactor value="10.0" />
+          <flash value="false" />
+          <light value="true" />
+          <spotLight value="true" />
+          <castShadows value="false" />
+        </Item>
+        <Item>
+          <rotation>
+            <delta value="0.0" />
+            <start value="0.0" />
+            <speed value="1.0" />
+            <sequencer value="4294967295" />
+            <multiples value="1" />
+            <direction value="true" />
+            <syncToBpm value="true" />
+          </rotation>
+          <flashiness>
+            <delta value="0.0" />
+            <start value="0.0" />
+            <speed value="1.0" />
+            <sequencer value="2863311530" />
+            <multiples value="1" />
+            <direction value="true" />
+            <syncToBpm value="true" />
+          </flashiness>
+          <corona>
+            <intensity value="0.0" />
+            <size value="0.0" />
+            <pull value="0.0" />
+            <faceCamera value="false" />
+          </corona>
+          <color value="0xFF0000FF" />
+          <intensity value="1.5" />
+          <lightGroup value="0" />
+          <rotate value="false" />
+          <scale value="true" />
+          <scaleFactor value="10.0" />
+          <flash value="true" />
+          <light value="true" />
+          <spotLight value="true" />
+          <castShadows value="false" />
+        </Item>
+      </sirens>
+    </Item>
+  </Sirens>
+</CVehicleModelInfoVarGlobal>

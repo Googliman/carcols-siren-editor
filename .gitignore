@@ -1,0 +1,7 @@
+dev_secret.py
+build/
+dist/
+__pycache__/
+*.pyc
+scratch_*.py
+scratch_*.meta
