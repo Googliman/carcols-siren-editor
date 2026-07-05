@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import copy
-import datetime
-import hashlib
 import json
 import re
 import threading
@@ -11,7 +9,6 @@ import urllib.error
 import urllib.request
 import webbrowser
 from tkinter import colorchooser, filedialog, messagebox, ttk
-from urllib.parse import quote
 
 from carcols_io import argb_to_tk, export_carcols, import_carcols, normalize_argb_hex
 from model import (
@@ -24,37 +21,16 @@ from model import (
     sequencer_to_bits,
 )
 from sample_data import build_sample_settings
-from settings_store import load_settings, save_settings
+from settings_store import DEFAULT_APP_VERSION, GITHUB_REPO, load_settings, save_settings
 from sirentool_io import parse_sirentool_export
 
 ARGB_HEX_RE = re.compile(r"^0x[0-9A-Fa-f]{8}$")
 DEFAULT_QUICK_COLORS = ["0xFFFF0000", "0xFF0000FF", "0xFF00FF00", "0xFFFFFFFF", "0xFFFFA500", "0xFFFF00FF"]
 
-DEFAULT_APP_VERSION = "0.1.0-alpha"
-GITHUB_REPO = "Googliman/carcols-siren-editor"
-
 # Confirmed across 33 real carcols.meta files: the siren-level <textureName> only ever
 # uses these three. Other "VehicleLight_car_*" textures exist in GTA V, but those belong
 # to the separate headlight/indicator <Lights> section, not this field.
 SIREN_TEXTURE_OPTIONS = ["VehicleLight_sirenlight", "VehicleLight_searchlight", "VehicleLight_misc_searchlight"]
-
-# Not a real security boundary (this ships inside the compiled exe, so it can be
-# decompiled) - just enough friction that a friend clicking around won't stumble
-# into the version-editing tool. The key rotates daily so a code seen once can't
-# be reused indefinitely. The actual salt/email live in dev_secret.py, which is
-# gitignored so they never end up in the public repo - see dev_secret.example.py.
-try:
-    from dev_secret import DEV_KEY_SALT as _DEV_KEY_SALT, DEV_EMAIL as HARDCODED_DEV_EMAIL
-except ImportError:
-    _DEV_KEY_SALT = "local-dev-secret-not-configured"
-    HARDCODED_DEV_EMAIL = "not-configured@example.com"
-
-
-def todays_dev_key() -> str:
-    today = datetime.date.today().isoformat()
-    digest = hashlib.sha256((_DEV_KEY_SALT + today).encode()).hexdigest()
-    return digest[:6].upper()
-
 
 def _fetch_latest_release():
     """Unauthenticated call to GitHub's public API - no token needed since the repo
@@ -69,17 +45,6 @@ def _fetch_latest_release():
     if not tag_name or not html_url:
         return None
     return tag_name, html_url
-
-
-def _open_gmail_compose_draft(to_address: str, code: str) -> None:
-    """Opens Gmail's web compose view pre-filled in the default browser. More reliable
-    than the OS 'mailto:' handler, which on this system (new Outlook) doesn't actually
-    pre-fill a compose window - it just opens the Drafts folder."""
-    subject = quote("Your Carcols Siren Editor developer code")
-    body = quote(f"Today's developer key is: {code}")
-    to = quote(to_address)
-    url = f"https://mail.google.com/mail/?view=cm&fs=1&to={to}&su={subject}&body={body}"
-    webbrowser.open(url)
 
 
 def _is_valid_color_list(colors) -> bool:
@@ -456,7 +421,6 @@ class CarcolsEditorApp:
         self.quick_colors = list(saved_colors) if _is_valid_color_list(saved_colors) else list(DEFAULT_QUICK_COLORS)
         self.app_version = saved.get("app_version") if isinstance(saved.get("app_version"), str) else DEFAULT_APP_VERSION
         self._settings_window = None
-        self._dev_change_version_unlocked = False
         self._update_button_shown = False
 
         self._build_menu()
@@ -465,7 +429,6 @@ class CarcolsEditorApp:
         if self.settings:
             self._select_setting(0)
 
-        self.root.bind_all("<Control-Alt-F12>", self._open_dev_key_prompt)
         self._check_for_updates()
 
     def _check_for_updates(self) -> None:
@@ -906,103 +869,3 @@ class CarcolsEditorApp:
         ttk.Label(win, text=f"Version {self.app_version}").pack(padx=24, pady=(0, 16))
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 16))
 
-    def _open_dev_key_prompt(self, event=None) -> None:
-        if self._dev_change_version_unlocked:
-            return
-
-        win = tk.Toplevel(self.root)
-        win.title("Developer Verification")
-        win.resizable(False, False)
-
-        ttk.Label(win, text="Enter your developer email:").pack(padx=16, pady=(16, 4))
-        email_var = tk.StringVar()
-        entry = ttk.Entry(win, textvariable=email_var, width=28)
-        entry.pack(padx=16, pady=(0, 8))
-        entry.focus_set()
-
-        def submit_email(event=None):
-            if email_var.get().strip().lower() == HARDCODED_DEV_EMAIL.lower():
-                win.destroy()
-                _open_gmail_compose_draft(HARDCODED_DEV_EMAIL, todays_dev_key())
-                self._open_dev_code_prompt()
-            else:
-                messagebox.showerror("Not recognized", "That email isn't recognized.")
-
-        entry.bind("<Return>", submit_email)
-        button_frame = ttk.Frame(win)
-        button_frame.pack(pady=(0, 16))
-        ttk.Button(button_frame, text="Submit", command=submit_email).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(button_frame, text="Cancel", command=win.destroy).pack(side=tk.LEFT)
-
-    def _open_dev_code_prompt(self) -> None:
-        win = tk.Toplevel(self.root)
-        win.title("Enter Developer Code")
-        win.resizable(False, False)
-
-        ttk.Label(
-            win,
-            text="A Gmail compose draft with your code has been opened in your\nbrowser - send it, then enter the code below:",
-            justify=tk.LEFT,
-        ).pack(padx=16, pady=(16, 4))
-        key_var = tk.StringVar()
-        entry = ttk.Entry(win, textvariable=key_var, show="*", width=20)
-        entry.pack(padx=16, pady=(0, 8))
-        entry.focus_set()
-
-        def submit(event=None):
-            if key_var.get().strip().upper() == todays_dev_key():
-                win.destroy()
-                self._enter_dev_mode()
-            else:
-                messagebox.showerror("Incorrect code", "That code isn't valid.")
-
-        entry.bind("<Return>", submit)
-        button_frame = ttk.Frame(win)
-        button_frame.pack(pady=(0, 16))
-        ttk.Button(button_frame, text="Submit", command=submit).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(button_frame, text="Cancel", command=win.destroy).pack(side=tk.LEFT)
-
-    def _enter_dev_mode(self) -> None:
-        if self._dev_change_version_unlocked:
-            return
-        self._dev_change_version_unlocked = True
-        self._dev_menu_start_index = self.menubar.index("end") + 1
-        self.menubar.add_command(label="Change Version", command=self._open_change_version_window)
-        self.menubar.add_command(label="Exit Dev Mode", command=self._exit_dev_mode)
-        self.root.title(f"{self.BASE_TITLE} - dev mode")
-
-    def _exit_dev_mode(self) -> None:
-        if not self._dev_change_version_unlocked:
-            return
-        self._dev_change_version_unlocked = False
-        self.menubar.delete(self._dev_menu_start_index, self._dev_menu_start_index + 1)
-        self.root.title(self.BASE_TITLE)
-
-    def _open_change_version_window(self) -> None:
-        win = tk.Toplevel(self.root)
-        win.title("Change Version")
-        win.resizable(False, False)
-
-        ttk.Label(win, text="New version string:").pack(padx=16, pady=(16, 4))
-        version_var = tk.StringVar(value=self.app_version)
-        entry = ttk.Entry(win, textvariable=version_var, width=24)
-        entry.pack(padx=16, pady=(0, 8))
-        entry.focus_set()
-
-        def save_version(event=None):
-            new_version = version_var.get().strip()
-            if not new_version:
-                messagebox.showerror("Invalid version", "Version can't be empty.")
-                return
-            self.app_version = new_version
-            data = load_settings()
-            data["app_version"] = new_version
-            save_settings(data)
-            win.destroy()
-            messagebox.showinfo("Version updated", f"Version changed to: {new_version}")
-
-        entry.bind("<Return>", save_version)
-        button_frame = ttk.Frame(win)
-        button_frame.pack(pady=(0, 16))
-        ttk.Button(button_frame, text="Save", command=save_version).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(button_frame, text="Cancel", command=win.destroy).pack(side=tk.LEFT)

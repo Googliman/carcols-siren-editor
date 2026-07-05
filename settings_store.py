@@ -5,6 +5,8 @@ import os
 
 APP_DIR_NAME = "CarcolsSirenEditor"
 SETTINGS_FILENAME = "settings.json"
+DEFAULT_APP_VERSION = "0.1.0-alpha"
+GITHUB_REPO = "Googliman/carcols-siren-editor"
 
 
 def _settings_path() -> str:
