@@ -10,8 +10,10 @@
       app_version persist across restarts via settings.json).
 - [ ] Dev mode / Change Version verification is casual protection only (the check
       logic ships inside the exe and could be decompiled) - not real security.
-- [ ] PyInstaller "onefile" build can trigger antivirus false positives for people
-      you send the exe to.
+- [x] ~~PyInstaller "onefile" build can trigger antivirus false positives~~ - switched
+      to a folder-based (--onedir) build + Desktop shortcut, which also fixed an
+      intermittent launch failure caused by AV scanning racing with onefile's
+      every-launch temp extraction.
 - [ ] No automated test suite (pytest) - verification so far has been manual/ad hoc
       scripts during development sessions.
 - [ ] The 32-step sequencer grid displays bit 0 on the left (LSB-first), which is

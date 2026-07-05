@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ import tkinter as tk
 import urllib.error
 import urllib.request
 import webbrowser
+import zipfile
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from carcols_io import argb_to_tk, export_carcols, import_carcols, normalize_argb_hex
@@ -39,7 +41,8 @@ SIREN_TEXTURE_OPTIONS = ["VehicleLight_sirenlight", "VehicleLight_searchlight", 
 def _fetch_latest_release():
     """Unauthenticated call to GitHub's public API - no token needed since the repo
     is public. Returns (tag_name, html_url, asset_url) or None if unreachable/no
-    releases yet. asset_url is None if the release has no .exe attached."""
+    releases yet. asset_url is None if the release has no .zip attached (the app is
+    distributed as a folder, not a single exe, so releases ship a zip of it)."""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                 "User-Agent": "CarcolsSirenEditor"})
@@ -51,7 +54,7 @@ def _fetch_latest_release():
         return None
     asset_url = None
     for asset in data.get("assets", []):
-        if asset.get("name", "").lower().endswith(".exe"):
+        if asset.get("name", "").lower().endswith(".zip"):
             asset_url = asset.get("browser_download_url")
             break
     return tag_name, html_url, asset_url
@@ -493,7 +496,7 @@ class CarcolsEditorApp:
                       foreground="#a00000", wraplength=280).pack(padx=20, pady=(0, 16))
         elif not asset_url:
             install_btn.configure(state="disabled")
-            ttk.Label(win, text="This release has no attached exe to install automatically - "
+            ttk.Label(win, text="This release has no attached zip to install automatically - "
                                  "use Download instead.",
                       foreground="#a00000", wraplength=280).pack(padx=20, pady=(0, 16))
         else:
@@ -510,13 +513,30 @@ class CarcolsEditorApp:
 
         def worker():
             try:
-                current_exe = sys.executable
-                new_exe_path = os.path.join(tempfile.gettempdir(), "CarcolsSirenEditorAlpha_new.exe")
-                urllib.request.urlretrieve(asset_url, new_exe_path)
-            except (urllib.error.URLError, OSError, ValueError) as exc:
+                install_dir = os.path.dirname(sys.executable)
+                zip_path = os.path.join(tempfile.gettempdir(), "CarcolsSirenEditorAlpha_update.zip")
+                urllib.request.urlretrieve(asset_url, zip_path)
+
+                staging_dir = os.path.join(tempfile.gettempdir(), "CarcolsSirenEditorAlpha_staging")
+                if os.path.isdir(staging_dir):
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                os.makedirs(staging_dir, exist_ok=True)
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(staging_dir)
+                os.remove(zip_path)
+
+                # The zip may contain the app folder as a single top-level entry, or its
+                # contents directly - handle both so the batch script always gets a folder
+                # of the app's actual files.
+                entries = os.listdir(staging_dir)
+                if len(entries) == 1 and os.path.isdir(os.path.join(staging_dir, entries[0])):
+                    staged_app_dir = os.path.join(staging_dir, entries[0])
+                else:
+                    staged_app_dir = staging_dir
+            except (urllib.error.URLError, OSError, ValueError, zipfile.BadZipFile) as exc:
                 self.root.after(0, lambda: self._install_failed(progress_win, str(exc)))
                 return
-            self.root.after(0, lambda: self._finish_install(progress_win, current_exe, new_exe_path))
+            self.root.after(0, lambda: self._finish_install(progress_win, install_dir, staged_app_dir))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -524,9 +544,11 @@ class CarcolsEditorApp:
         progress_win.destroy()
         messagebox.showerror("Update failed", f"Could not download the update:\n{message}")
 
-    def _finish_install(self, progress_win: tk.Toplevel, current_exe: str, new_exe_path: str) -> None:
+    def _finish_install(self, progress_win: tk.Toplevel, install_dir: str, staged_app_dir: str) -> None:
         progress_win.destroy()
         pid = os.getpid()
+        exe_name = os.path.basename(sys.executable)
+        backup_dir = install_dir + "_old_update"
         batch_path = os.path.join(tempfile.gettempdir(), "carcols_update.bat")
         # Fully-qualify tasklist/find/timeout with %SystemRoot%\System32 rather than relying
         # on bare command names resolving correctly via PATH - confirmed via testing that a
@@ -541,9 +563,11 @@ class CarcolsEditorApp:
             '    "%SystemRoot%\\System32\\timeout.exe" /t 1 /nobreak >NUL\r\n'
             "    goto wait\r\n"
             ")\r\n"
-            f'copy /Y "{new_exe_path}" "{current_exe}" >NUL\r\n'
-            f'start "" "{current_exe}"\r\n'
-            f'del "{new_exe_path}"\r\n'
+            f'if exist "{backup_dir}" rmdir /s /q "{backup_dir}"\r\n'
+            f'move "{install_dir}" "{backup_dir}" >NUL\r\n'
+            f'move "{staged_app_dir}" "{install_dir}" >NUL\r\n'
+            f'start "" "{os.path.join(install_dir, exe_name)}"\r\n'
+            f'rmdir /s /q "{backup_dir}"\r\n'
             'del "%~f0"\r\n'
         )
         with open(batch_path, "w", encoding="utf-8") as f:

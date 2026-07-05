@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -25,9 +26,15 @@ if PROJECT_DIR not in sys.path:
 
 from settings_store import DEFAULT_APP_VERSION, GITHUB_REPO, load_settings, save_settings
 
+# Built as a folder (--onedir), not a single exe - PyInstaller's onefile mode has to
+# re-extract itself to a fresh temp folder on every launch, which was observed to
+# intermittently race with antivirus real-time scanning and fail to start. onedir lays
+# everything out on disk once, so there's nothing to extract on subsequent launches.
 EXE_NAME = "CarcolsSirenEditorAlpha"
-DESKTOP_EXE_PATH = os.path.join(os.path.expanduser("~"), "Desktop", f"{EXE_NAME}.exe")
-DIST_EXE_PATH = os.path.join(PROJECT_DIR, "dist", f"{EXE_NAME}.exe")
+DESKTOP_DIR = os.path.join(os.path.expanduser("~"), "Desktop", EXE_NAME)
+DESKTOP_SHORTCUT = os.path.join(os.path.expanduser("~"), "Desktop", "Carcols Siren Editor.lnk")
+DIST_DIR = os.path.join(PROJECT_DIR, "dist", EXE_NAME)
+DIST_ZIP_PATH = os.path.join(PROJECT_DIR, "dist", f"{EXE_NAME}.zip")
 
 _GH_CANDIDATES = [r"C:\Program Files\GitHub CLI\gh.exe", "gh"]
 GH = next((p for p in _GH_CANDIDATES if p == "gh" or os.path.exists(p)), "gh")
@@ -208,14 +215,25 @@ class DevToolApp:
 
         self._log(f"No release exists yet for {tag} - building and publishing one...")
         self._log("Running PyInstaller (this can take a minute)...")
+        shutil.rmtree(DIST_DIR, ignore_errors=True)
         code, out = run_command([
-            sys.executable, "-m", "PyInstaller", "--onefile", "--windowed",
+            sys.executable, "-m", "PyInstaller", "--onedir", "--windowed",
             "--name", EXE_NAME, "--distpath", "./dist", "--workpath", "./build",
             "--specpath", "./build", "main.py",
         ])
         self._log(out[-3000:])
         if code != 0:
             self._log("Build failed - not creating a release.")
+            self._done()
+            return
+
+        self._log("Zipping the build for the release...")
+        try:
+            if os.path.exists(DIST_ZIP_PATH):
+                os.remove(DIST_ZIP_PATH)
+            shutil.make_archive(DIST_ZIP_PATH[:-4], "zip", root_dir=os.path.dirname(DIST_DIR), base_dir=EXE_NAME)
+        except OSError as exc:
+            self._log(f"Could not create the zip: {exc}")
             self._done()
             return
 
@@ -230,7 +248,7 @@ class DevToolApp:
             return
 
         self._log("Creating the GitHub release...")
-        code, out = run_gh(["release", "create", tag, DIST_EXE_PATH,
+        code, out = run_gh(["release", "create", tag, DIST_ZIP_PATH,
                             "--title", tag, "--notes", f"Release {tag}"])
         self._log(out)
         if code != 0:
@@ -239,14 +257,27 @@ class DevToolApp:
             return
 
         try:
-            import shutil
-            shutil.copyfile(DIST_EXE_PATH, DESKTOP_EXE_PATH)
-            self._log(f"Copied the new build to {DESKTOP_EXE_PATH}")
+            shutil.rmtree(DESKTOP_DIR, ignore_errors=True)
+            shutil.copytree(DIST_DIR, DESKTOP_DIR)
+            self._create_desktop_shortcut()
+            self._log(f"Copied the new build to {DESKTOP_DIR} and refreshed the Desktop shortcut.")
         except OSError as exc:
-            self._log(f"Could not copy exe to Desktop: {exc}")
+            self._log(f"Could not update the Desktop copy: {exc}")
 
         self._log("All done.")
         self._done()
+
+    def _create_desktop_shortcut(self) -> None:
+        target = os.path.join(DESKTOP_DIR, f"{EXE_NAME}.exe")
+        ps_script = (
+            "$WshShell = New-Object -ComObject WScript.Shell; "
+            f'$shortcut = $WshShell.CreateShortcut("{DESKTOP_SHORTCUT}"); '
+            f'$shortcut.TargetPath = "{target}"; '
+            f'$shortcut.WorkingDirectory = "{DESKTOP_DIR}"; '
+            f'$shortcut.IconLocation = "{target}"; '
+            "$shortcut.Save()"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True)
 
 
 def main() -> None:
