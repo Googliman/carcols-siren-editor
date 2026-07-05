@@ -120,9 +120,12 @@ class DevToolApp:
             self._done()
             return
 
-        code, _ = run_command(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"])
+        # Check the actual GitHub release, not local git refs - "gh release create" can
+        # publish a release/tag on the remote without ever creating a local tag ref, so
+        # checking local refs alone can wrongly think no release exists yet.
+        code, _ = run_command([GH, "release", "view", tag])
         if code == 0:
-            self._log(f"Tag {tag} already exists - no new release needed. Done.")
+            self._log(f"Release {tag} already exists on GitHub - no new one needed. Done.")
             self._done()
             return
 
@@ -140,9 +143,14 @@ class DevToolApp:
             return
 
         self._log(f"Tagging {tag} and pushing the tag...")
+        run_command(["git", "tag", "-d", tag])  # clean up any stale local tag, ok if it doesn't exist
         run_command(["git", "tag", tag])
         code, out = run_command(["git", "push", "origin", tag])
         self._log(out)
+        if code != 0:
+            self._log("Tag push failed - not creating a release.")
+            self._done()
+            return
 
         self._log("Creating the GitHub release...")
         code, out = run_command([GH, "release", "create", tag, DIST_EXE_PATH,
