@@ -1,4 +1,4 @@
-# Carcols Siren Editor (Alpha)
+# Carcols Siren Editor
 
 A desktop tool for editing GTA V / FiveM vehicle `carcols.meta` siren settings — colors,
 flash sequences, rotation, LED/Halogen/Rotator behavior — without hand-editing XML.

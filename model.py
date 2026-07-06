@@ -131,11 +131,63 @@ class SirenSetting:
 
 
 @dataclass
+class LightBeam:
+    """Shared shape for the indicator/tailLight/headLight/reversingLight blocks
+    inside a <Lights> Item."""
+    intensity: float = 1.0
+    falloff_max: float = 10.0
+    falloff_exponent: float = 10.0
+    inner_cone_angle: float = 10.0
+    outer_cone_angle: float = 55.0
+    emissive_boost: bool = True
+    color: str = "0xFFFFFFFF"
+    texture_name: str = ""
+    mirror_texture: bool = True
+
+
+@dataclass
+class LightCorona:
+    """Shared shape for the *Corona blocks inside a <Lights> Item."""
+    size: float = 0.0
+    size_far: float = 0.0
+    intensity: float = 0.0
+    intensity_far: float = 0.0
+    color: str = "0xFFFFFFFF"
+    num_coronas: int = 0
+    dist_between_coronas: float = 0.0
+    dist_between_coronas_far: float = 0.0
+    x_rotation: float = 0.0
+    y_rotation: float = 0.0
+    z_rotation: float = 0.0
+    z_bias: float = 0.0
+    pull_corona_in: bool = False
+
+
+@dataclass
+class LightProfile:
+    """One <Lights><Item> entry - the indicator/headlight/taillight/reversing-light
+    setup for a vehicle. Real carcols.meta files almost always have exactly one."""
+    id: int = 0
+    name: str = ""
+    indicator: LightBeam = field(default_factory=LightBeam)
+    rear_indicator_corona: LightCorona = field(default_factory=LightCorona)
+    front_indicator_corona: LightCorona = field(default_factory=LightCorona)
+    tail_light: LightBeam = field(default_factory=LightBeam)
+    tail_light_corona: LightCorona = field(default_factory=LightCorona)
+    tail_light_middle_corona: LightCorona = field(default_factory=LightCorona)
+    head_light: LightBeam = field(default_factory=LightBeam)
+    head_light_corona: LightCorona = field(default_factory=LightCorona)
+    reversing_light: LightBeam = field(default_factory=LightBeam)
+    reversing_light_corona: LightCorona = field(default_factory=LightCorona)
+    comment: str = ""
+
+
+@dataclass
 class CarcolsDocument:
-    """A parsed carcols.meta: the siren settings we edit, plus verbatim passthroughs
-    of the <Kits> and <Lights> sections (vehicle mod kits, indicators/headlights/
-    taillights) which this tool does not edit but must not destroy when re-exporting
-    a real vehicle's file."""
+    """A parsed carcols.meta: the siren settings and light profiles we edit, plus a
+    verbatim passthrough of <Kits> (vehicle mod kit data) which this tool does not
+    edit but must not destroy when re-exporting a real vehicle's file. In practice
+    every real sample file has an empty or absent <Kits> section."""
     siren_settings: list = field(default_factory=list)
+    light_profiles: list = field(default_factory=list)
     raw_kits_element: object = None
-    raw_lights_element: object = None

@@ -6,6 +6,9 @@ from model import (
     CarcolsDocument,
     Corona,
     Light,
+    LightBeam,
+    LightCorona,
+    LightProfile,
     SirenSetting,
     TimingBlock,
     infer_light_type,
@@ -175,6 +178,110 @@ def _leading_comment(elem: ET.Element) -> str:
     return ""
 
 
+def _parse_light_beam(elem) -> LightBeam:
+    if elem is None:
+        return LightBeam()
+    color_el = elem.find("color")
+    return LightBeam(
+        intensity=_get_value(elem, "intensity", default=1.0),
+        falloff_max=_get_value(elem, "falloffMax", default=10.0),
+        falloff_exponent=_get_value(elem, "falloffExponent", default=10.0),
+        inner_cone_angle=_get_value(elem, "innerConeAngle", default=10.0),
+        outer_cone_angle=_get_value(elem, "outerConeAngle", default=55.0),
+        emissive_boost=_get_value(elem, "emmissiveBoost", default=True, cast=bool),
+        color=(normalize_argb_hex(color_el.get("value")) or "0xFFFFFFFF") if color_el is not None else "0xFFFFFFFF",
+        texture_name=_get_text(elem, "textureName", default=""),
+        mirror_texture=_get_value(elem, "mirrorTexture", default=True, cast=bool),
+    )
+
+
+def _write_light_beam(parent: ET.Element, tag: str, beam: LightBeam) -> None:
+    el = ET.SubElement(parent, tag)
+    _set_val(el, "intensity", beam.intensity)
+    _set_val(el, "falloffMax", beam.falloff_max)
+    _set_val(el, "falloffExponent", beam.falloff_exponent)
+    _set_val(el, "innerConeAngle", beam.inner_cone_angle)
+    _set_val(el, "outerConeAngle", beam.outer_cone_angle)
+    _set_val(el, "emmissiveBoost", beam.emissive_boost)
+    ET.SubElement(el, "color").set("value", normalize_argb_hex(beam.color) or "0xFFFFFFFF")
+    ET.SubElement(el, "textureName").text = beam.texture_name or None
+    _set_val(el, "mirrorTexture", beam.mirror_texture)
+
+
+def _parse_light_corona(elem) -> LightCorona:
+    if elem is None:
+        return LightCorona()
+    color_el = elem.find("color")
+    return LightCorona(
+        size=_get_value(elem, "size", default=0.0),
+        size_far=_get_value(elem, "size_far", default=0.0),
+        intensity=_get_value(elem, "intensity", default=0.0),
+        intensity_far=_get_value(elem, "intensity_far", default=0.0),
+        color=(normalize_argb_hex(color_el.get("value")) or "0xFFFFFFFF") if color_el is not None else "0xFFFFFFFF",
+        num_coronas=_get_value(elem, "numCoronas", default=0, cast=int),
+        dist_between_coronas=_get_value(elem, "distBetweenCoronas", default=0.0),
+        dist_between_coronas_far=_get_value(elem, "distBetweenCoronas_far", default=0.0),
+        x_rotation=_get_value(elem, "xRotation", default=0.0),
+        y_rotation=_get_value(elem, "yRotation", default=0.0),
+        z_rotation=_get_value(elem, "zRotation", default=0.0),
+        z_bias=_get_value(elem, "zBias", default=0.0),
+        pull_corona_in=_get_value(elem, "pullCoronaIn", default=False, cast=bool),
+    )
+
+
+def _write_light_corona(parent: ET.Element, tag: str, corona: LightCorona) -> None:
+    el = ET.SubElement(parent, tag)
+    _set_val(el, "size", corona.size)
+    _set_val(el, "size_far", corona.size_far)
+    _set_val(el, "intensity", corona.intensity)
+    _set_val(el, "intensity_far", corona.intensity_far)
+    ET.SubElement(el, "color").set("value", normalize_argb_hex(corona.color) or "0xFFFFFFFF")
+    _set_val(el, "numCoronas", corona.num_coronas)
+    _set_val(el, "distBetweenCoronas", corona.dist_between_coronas)
+    _set_val(el, "distBetweenCoronas_far", corona.dist_between_coronas_far)
+    _set_val(el, "xRotation", corona.x_rotation)
+    _set_val(el, "yRotation", corona.y_rotation)
+    _set_val(el, "zRotation", corona.z_rotation)
+    _set_val(el, "zBias", corona.z_bias)
+    _set_val(el, "pullCoronaIn", corona.pull_corona_in)
+
+
+def _parse_light_profile(item_el: ET.Element, comment: str = "") -> LightProfile:
+    return LightProfile(
+        id=_get_value(item_el, "id", default=0, cast=int),
+        name=_get_text(item_el, "name", default=""),
+        comment=comment or _leading_comment(item_el),
+        indicator=_parse_light_beam(item_el.find("indicator")),
+        rear_indicator_corona=_parse_light_corona(item_el.find("rearIndicatorCorona")),
+        front_indicator_corona=_parse_light_corona(item_el.find("frontIndicatorCorona")),
+        tail_light=_parse_light_beam(item_el.find("tailLight")),
+        tail_light_corona=_parse_light_corona(item_el.find("tailLightCorona")),
+        tail_light_middle_corona=_parse_light_corona(item_el.find("tailLightMiddleCorona")),
+        head_light=_parse_light_beam(item_el.find("headLight")),
+        head_light_corona=_parse_light_corona(item_el.find("headLightCorona")),
+        reversing_light=_parse_light_beam(item_el.find("reversingLight")),
+        reversing_light_corona=_parse_light_corona(item_el.find("reversingLightCorona")),
+    )
+
+
+def _write_light_profile(lights_root: ET.Element, profile: LightProfile) -> None:
+    if profile.comment.strip():
+        lights_root.append(ET.Comment(f" {profile.comment.strip()} "))
+    item = ET.SubElement(lights_root, "Item")
+    _set_val(item, "id", profile.id)
+    _write_light_beam(item, "indicator", profile.indicator)
+    _write_light_corona(item, "rearIndicatorCorona", profile.rear_indicator_corona)
+    _write_light_corona(item, "frontIndicatorCorona", profile.front_indicator_corona)
+    _write_light_beam(item, "tailLight", profile.tail_light)
+    _write_light_corona(item, "tailLightCorona", profile.tail_light_corona)
+    _write_light_corona(item, "tailLightMiddleCorona", profile.tail_light_middle_corona)
+    _write_light_beam(item, "headLight", profile.head_light)
+    _write_light_corona(item, "headLightCorona", profile.head_light_corona)
+    _write_light_beam(item, "reversingLight", profile.reversing_light)
+    _write_light_corona(item, "reversingLightCorona", profile.reversing_light_corona)
+    ET.SubElement(item, "name").text = profile.name or None
+
+
 def _parse_light(light_item: ET.Element, idx: int, comment: str = "") -> Light:
     comment = comment or _leading_comment(light_item)
     rotate = _get_value(light_item, "rotate", default=False, cast=bool)
@@ -306,7 +413,13 @@ def import_carcols(path: str) -> CarcolsDocument:
 
     lights_el = root.find("Lights")
     if lights_el is not None:
-        document.raw_lights_element = lights_el
+        pending_comment = ""
+        for child in lights_el:
+            if child.tag is ET.Comment:
+                pending_comment = (child.text or "").strip()
+            elif child.tag == "Item":
+                document.light_profiles.append(_parse_light_profile(child, comment=pending_comment))
+                pending_comment = ""
 
     for item_el in sirens_root.findall("Item"):
         document.siren_settings.append(_parse_siren_setting(item_el))
@@ -320,8 +433,10 @@ def export_carcols(document: CarcolsDocument, path: str) -> None:
     if document.raw_kits_element is not None:
         root.append(document.raw_kits_element)
 
-    if document.raw_lights_element is not None:
-        root.append(document.raw_lights_element)
+    if document.light_profiles:
+        lights_root = ET.SubElement(root, "Lights")
+        for profile in document.light_profiles:
+            _write_light_profile(lights_root, profile)
 
     sirens_root = ET.SubElement(root, "Sirens")
     for setting in document.siren_settings:

@@ -119,12 +119,24 @@ class DevToolApp:
         self.token_var = tk.StringVar()
         ttk.Entry(token_frame, textvariable=self.token_var, show="*", width=30).pack(side=tk.LEFT, padx=(6, 6))
         ttk.Button(token_frame, text="Save Token", command=self.save_token).pack(side=tk.LEFT)
+        ttk.Button(token_frame, text="Clear Token", command=self.clear_token).pack(side=tk.LEFT, padx=(6, 0))
+
+        self.token_status_var = tk.StringVar()
+        ttk.Label(token_frame, textvariable=self.token_status_var, foreground="#0a7d1f").pack(side=tk.LEFT, padx=(10, 0))
+        self._refresh_token_status()
+
         ttk.Label(
-            token_frame,
+            root,
             text="Only needed if 'Push to GitHub' fails with a gh auth error. Get one from "
                  "github.com > Settings > Developer settings > Personal access tokens (repo scope).",
             foreground="#555555",
-        ).pack(side=tk.LEFT, padx=(10, 0))
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+        ttk.Label(root, text="Release Notes (what's new in this version - shown to users when they update):").pack(
+            anchor="w", padx=10)
+        self.notes_text = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=6)
+        self.notes_text.pack(fill=tk.X, padx=10, pady=(2, 10))
+        self.notes_text.insert("1.0", settings.get("dev_notes_draft", ""))
 
         action_frame = ttk.Frame(root)
         action_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -133,12 +145,25 @@ class DevToolApp:
         ttk.Label(
             action_frame,
             text="Commits + pushes source. If the version above doesn't have a "
-                 "release yet, also builds the exe and publishes a new release.",
+                 "release yet, also builds the exe and publishes a new release using the notes above.",
             foreground="#555555",
         ).pack(side=tk.LEFT, padx=(10, 0))
 
         self.log = scrolledtext.ScrolledText(root, wrap=tk.WORD, state="disabled")
         self.log.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # If two copies of this tool end up open at once (easy to do since it has no
+        # single-instance check), a stale window's status label would otherwise keep
+        # showing whatever was true when IT started, even after the token changes via
+        # the other window - re-check the real file every time this window regains focus.
+        root.bind("<FocusIn>", lambda e: self._refresh_token_status())
+
+    def _on_close(self) -> None:
+        data = load_settings()
+        data["dev_notes_draft"] = self.notes_text.get("1.0", tk.END).strip()
+        save_settings(data)
+        self.root.destroy()
 
     def save_token(self) -> None:
         token = self.token_var.get().strip()
@@ -147,7 +172,18 @@ class DevToolApp:
             return
         save_gh_token(token)
         self.token_var.set("")
+        self._refresh_token_status()
         self.log_line("GitHub token saved locally - it'll be used automatically for gh commands from now on.")
+        messagebox.showinfo("Token saved", f"Saved to:\n{TOKEN_PATH}")
+
+    def clear_token(self) -> None:
+        save_gh_token("")
+        self.token_var.set("")
+        self._refresh_token_status()
+        self.log_line("GitHub token cleared.")
+
+    def _refresh_token_status(self) -> None:
+        self.token_status_var.set("Token saved" if load_gh_token() else "No token saved")
 
     def log_line(self, text: str) -> None:
         self.log.configure(state="normal")
@@ -190,6 +226,7 @@ class DevToolApp:
             self._done()
             return
         self.root.after(0, self.version_var.set, version)
+        notes = self.notes_text.get("1.0", tk.END).strip()
 
         # Keep the persisted version in sync with what's about to be tagged/released,
         # even if "Save Version" was never clicked separately.
@@ -257,12 +294,19 @@ class DevToolApp:
 
         self._log("Creating the GitHub release...")
         code, out = run_gh(["release", "create", tag, DIST_ZIP_PATH,
-                            "--title", tag, "--notes", f"Release {tag}"])
+                            "--title", tag, "--notes", notes or f"Release {tag}"])
         self._log(out)
         if code != 0:
             self._log("Release creation failed - check the output above.")
             self._done()
             return
+
+        # Notes are per-release - clear them (and the persisted draft) now that they've
+        # been published, so the next version starts with a blank slate.
+        self.root.after(0, lambda: self.notes_text.delete("1.0", tk.END))
+        cleared = load_settings()
+        cleared.pop("dev_notes_draft", None)
+        save_settings(cleared)
 
         try:
             shutil.rmtree(DESKTOP_DIR, ignore_errors=True)

@@ -14,19 +14,19 @@ import urllib.error
 import urllib.request
 import webbrowser
 import zipfile
-from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, scrolledtext, ttk
 
 from carcols_io import argb_to_tk, export_carcols, import_carcols, normalize_argb_hex
 from model import (
     CarcolsDocument,
     Light,
+    LightProfile,
     LightType,
     SEQUENCER_PRESETS,
     SirenSetting,
     bits_to_sequencer,
     sequencer_to_bits,
 )
-from sample_data import build_sample_settings
 from settings_store import DEFAULT_APP_VERSION, GITHUB_REPO, load_settings, save_settings
 from sirentool_io import parse_sirentool_export
 
@@ -40,9 +40,10 @@ SIREN_TEXTURE_OPTIONS = ["VehicleLight_sirenlight", "VehicleLight_searchlight", 
 
 def _fetch_latest_release():
     """Unauthenticated call to GitHub's public API - no token needed since the repo
-    is public. Returns (tag_name, html_url, asset_url) or None if unreachable/no
+    is public. Returns (tag_name, html_url, asset_url, notes) or None if unreachable/no
     releases yet. asset_url is None if the release has no .zip attached (the app is
-    distributed as a folder, not a single exe, so releases ship a zip of it)."""
+    distributed as a folder, not a single exe, so releases ship a zip of it). notes is
+    the release body text (the dev notes written in the dev tool), possibly empty."""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                 "User-Agent": "CarcolsSirenEditor"})
@@ -57,7 +58,8 @@ def _fetch_latest_release():
         if asset.get("name", "").lower().endswith(".zip"):
             asset_url = asset.get("browser_download_url")
             break
-    return tag_name, html_url, asset_url
+    notes = (data.get("body") or "").strip()
+    return tag_name, html_url, asset_url, notes
 
 
 def _is_valid_color_list(colors) -> bool:
@@ -66,6 +68,18 @@ def _is_valid_color_list(colors) -> bool:
         and len(colors) > 0
         and all(isinstance(c, str) and ARGB_HEX_RE.match(c) for c in colors)
     )
+
+
+def _set_widget_state_recursive(widget, state: str) -> None:
+    """Grey out (or re-enable) an entire widget subtree - used for the Rotation/
+    Flashiness panels, whose fields live inside a nested Frame rather than directly
+    under the LabelFrame, so a single-level winfo_children() pass wouldn't reach them."""
+    for child in widget.winfo_children():
+        try:
+            child.configure(state=state)
+        except tk.TclError:
+            pass
+        _set_widget_state_recursive(child, state)
 
 
 class LightRowWidget:
@@ -87,164 +101,210 @@ class LightRowWidget:
         top = ttk.Frame(f)
         top.pack(fill=tk.X, padx=6, pady=(6, 2))
 
-        self.name_var = tk.StringVar(value=light.name)
-        name_entry = ttk.Entry(top, textvariable=self.name_var, width=16)
-        name_entry.grid(row=0, column=0, padx=(0, 10))
-        name_entry.bind("<KeyRelease>", self._on_name_change)
-
-        ttk.Label(top, text="Color:").grid(row=0, column=1, sticky="e")
+        ttk.Label(top, text="Color:").grid(row=0, column=0, sticky="e")
         self.color_btn = tk.Button(top, width=4, bg=argb_to_tk(light.color), command=self._pick_color,
                                     relief=tk.RAISED)
-        self.color_btn.grid(row=0, column=2, padx=(4, 10))
+        self.color_btn.grid(row=0, column=1, padx=(4, 10))
 
         presets_frame = ttk.Frame(top)
-        presets_frame.grid(row=0, column=3, padx=(0, 10))
+        presets_frame.grid(row=0, column=2, padx=(0, 10))
         for hexcol in self.quick_colors:
             b = tk.Button(presets_frame, bg=argb_to_tk(hexcol), width=2, relief=tk.FLAT,
                           command=lambda c=hexcol: self._set_color(c))
             b.pack(side=tk.LEFT, padx=1)
 
-        ttk.Label(top, text="Type:").grid(row=0, column=4, sticky="e")
+        ttk.Label(top, text="Type:").grid(row=0, column=3, sticky="e")
         self.type_var = tk.StringVar(value=light.light_type.value)
         type_combo = ttk.Combobox(top, textvariable=self.type_var, width=9, state="readonly",
                                    values=[t.value for t in LightType])
-        type_combo.grid(row=0, column=5, padx=(4, 10))
+        type_combo.grid(row=0, column=4, padx=(4, 10))
         type_combo.bind("<<ComboboxSelected>>", self._on_type_change)
 
-        ttk.Button(top, text="Remove", command=self._on_remove_click).grid(row=0, column=6, padx=(10, 0))
-
-        # Row 1: intensity + core flags
-        mid = ttk.Frame(f)
-        mid.pack(fill=tk.X, padx=6, pady=2)
-
-        ttk.Label(mid, text="Intensity:").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, text="Intensity:").grid(row=0, column=5, sticky="e")
         self.intensity_var = tk.DoubleVar(value=light.intensity)
-        intensity_spin = ttk.Spinbox(mid, from_=0.0, to=1000.0, increment=0.1, textvariable=self.intensity_var,
+        intensity_spin = ttk.Spinbox(top, from_=0.0, to=1000.0, increment=0.1, textvariable=self.intensity_var,
                                       width=8, command=self._on_intensity_change)
-        intensity_spin.grid(row=0, column=1, padx=(4, 16))
+        intensity_spin.grid(row=0, column=6, padx=(4, 10))
         intensity_spin.bind("<KeyRelease>", self._on_intensity_change)
         intensity_spin.bind("<FocusOut>", self._on_intensity_change)
 
+        ttk.Button(top, text="Remove", command=self._on_remove_click).grid(row=0, column=7, padx=(10, 0))
+
+        # Flags row: Rotate, Scale (+ Scale Value, hidden unless Scale is checked), Flash, Light,
+        # Spotlight, Cast Shadows - all on one line to keep the layout scannable.
+        flags = ttk.Frame(f)
+        flags.pack(fill=tk.X, padx=6, pady=2)
+
         self.rotate_var = tk.BooleanVar(value=light.rotate)
-        ttk.Checkbutton(mid, text="Rotate", variable=self.rotate_var,
-                        command=self._on_flags_change).grid(row=0, column=2, padx=(0, 10))
-
-        self.flash_var = tk.BooleanVar(value=light.flash)
-        ttk.Checkbutton(mid, text="Flash", variable=self.flash_var,
-                        command=self._on_flags_change).grid(row=0, column=3, padx=(0, 10))
-
-        self.emits_var = tk.BooleanVar(value=light.emits_light)
-        ttk.Checkbutton(mid, text="Emits Light", variable=self.emits_var,
-                        command=self._on_flags_change).grid(row=0, column=4, padx=(0, 10))
-
-        self.spot_var = tk.BooleanVar(value=light.spot_light)
-        ttk.Checkbutton(mid, text="Spotlight", variable=self.spot_var,
-                        command=self._on_flags_change).grid(row=0, column=5, padx=(0, 10))
-
-        self.shadows_var = tk.BooleanVar(value=light.cast_shadows)
-        ttk.Checkbutton(mid, text="Cast Shadows", variable=self.shadows_var,
-                        command=self._on_flags_change).grid(row=0, column=6)
-
-        # Row 2: scale trick (fake-rotation via texture scaling) + corona glow
-        mid2 = ttk.Frame(f)
-        mid2.pack(fill=tk.X, padx=6, pady=2)
+        ttk.Checkbutton(flags, text="Rotate", variable=self.rotate_var,
+                        command=self._on_flags_change).pack(side=tk.LEFT, padx=(0, 14))
 
         self.scale_var = tk.BooleanVar(value=light.scale)
-        ttk.Checkbutton(mid2, text="Scale Trick", variable=self.scale_var,
-                        command=self._on_flags_change).grid(row=0, column=0, padx=(0, 6))
+        scale_check = ttk.Checkbutton(flags, text="Scale", variable=self.scale_var,
+                                       command=self._on_flags_change)
+        scale_check.pack(side=tk.LEFT)
 
-        ttk.Label(mid2, text="Scale Factor:").grid(row=0, column=1, sticky="e")
+        self._flash_check = ttk.Checkbutton(flags, text="Flash")
+        self.flash_var = tk.BooleanVar(value=light.flash)
+        self._flash_check.configure(variable=self.flash_var, command=self._on_flags_change)
+
+        emits_check = ttk.Checkbutton(flags, text="Light")
+        self.emits_var = tk.BooleanVar(value=light.emits_light)
+        emits_check.configure(variable=self.emits_var, command=self._on_flags_change)
+
+        spot_check = ttk.Checkbutton(flags, text="Spotlight")
+        self.spot_var = tk.BooleanVar(value=light.spot_light)
+        spot_check.configure(variable=self.spot_var, command=self._on_flags_change)
+
+        shadows_check = ttk.Checkbutton(flags, text="Cast Shadows")
+        self.shadows_var = tk.BooleanVar(value=light.cast_shadows)
+        shadows_check.configure(variable=self.shadows_var, command=self._on_flags_change)
+
+        self.scale_value_frame = ttk.Frame(flags)
+        ttk.Label(self.scale_value_frame, text="Scale Value:").pack(side=tk.LEFT, padx=(6, 2))
         self.scale_factor_var = tk.DoubleVar(value=light.scale_factor)
-        scale_factor_spin = ttk.Spinbox(mid2, from_=0.0, to=1000.0, increment=0.5,
+        scale_factor_spin = ttk.Spinbox(self.scale_value_frame, from_=0.0, to=1000.0, increment=0.5,
                                          textvariable=self.scale_factor_var, width=8, command=self._on_flags_change)
-        scale_factor_spin.grid(row=0, column=2, padx=(4, 16))
+        scale_factor_spin.pack(side=tk.LEFT)
         scale_factor_spin.bind("<KeyRelease>", self._on_flags_change)
         scale_factor_spin.bind("<FocusOut>", self._on_flags_change)
 
-        ttk.Label(mid2, text="Corona Intensity:").grid(row=0, column=3, sticky="e")
-        self.corona_intensity_var = tk.DoubleVar(value=light.corona.intensity)
-        corona_intensity_spin = ttk.Spinbox(mid2, from_=0.0, to=1000.0, increment=0.1,
-                                             textvariable=self.corona_intensity_var, width=8,
-                                             command=self._on_corona_change)
-        corona_intensity_spin.grid(row=0, column=4, padx=(4, 16))
-        corona_intensity_spin.bind("<KeyRelease>", self._on_corona_change)
-        corona_intensity_spin.bind("<FocusOut>", self._on_corona_change)
+        self._flash_check.pack(side=tk.LEFT, padx=(0, 14))
+        emits_check.pack(side=tk.LEFT, padx=(0, 14))
+        spot_check.pack(side=tk.LEFT, padx=(0, 14))
+        shadows_check.pack(side=tk.LEFT)
 
-        ttk.Label(mid2, text="Corona Size:").grid(row=0, column=5, sticky="e")
-        self.corona_size_var = tk.DoubleVar(value=light.corona.size)
-        corona_size_spin = ttk.Spinbox(mid2, from_=0.0, to=1000.0, increment=0.1,
-                                        textvariable=self.corona_size_var, width=8, command=self._on_corona_change)
-        corona_size_spin.grid(row=0, column=6, padx=(4, 0))
-        corona_size_spin.bind("<KeyRelease>", self._on_corona_change)
-        corona_size_spin.bind("<FocusOut>", self._on_corona_change)
+        self._update_scale_value_visibility()
 
-        # Sequencer grid (drives <flashiness><sequencer>, the actual on/off flash pattern)
-        seq_frame = ttk.LabelFrame(f, text="Flash Sequence (32-step cycle)")
+        # Flash Pattern grid (drives <flashiness><sequencer>, the actual on/off pattern)
+        seq_frame = ttk.LabelFrame(f, text="Flash Pattern")
         seq_frame.pack(fill=tk.X, padx=6, pady=4)
 
         self.seq_vars = [tk.BooleanVar(value=bit) for bit in sequencer_to_bits(light.flashiness.sequencer)]
         self.seq_checkbuttons = []
         grid_frame = ttk.Frame(seq_frame)
-        grid_frame.pack(side=tk.LEFT, padx=4, pady=4)
+        grid_frame.pack(padx=4, pady=(4, 2))
         for i, var in enumerate(self.seq_vars):
             cb = tk.Checkbutton(grid_frame, variable=var, command=self._on_sequencer_change,
                                  onvalue=True, offvalue=False, indicatoron=False,
                                  width=2, selectcolor=argb_to_tk(light.color),
                                  relief=tk.SUNKEN if var.get() else tk.RAISED, borderwidth=2)
-            cb.grid(row=i // 16, column=i % 16, padx=1, pady=1)
+            cb.grid(row=0, column=i, padx=1, pady=1)
             self.seq_checkbuttons.append(cb)
 
-        preset_frame = ttk.Frame(seq_frame)
-        preset_frame.pack(side=tk.LEFT, padx=10)
-        ttk.Label(preset_frame, text="Preset:").pack(anchor="w")
+        controls_frame = ttk.Frame(seq_frame)
+        controls_frame.pack(fill=tk.X, padx=4, pady=(2, 6))
+
+        ttk.Label(controls_frame, text="Preset:").pack(side=tk.LEFT)
         self.preset_var = tk.StringVar()
-        preset_combo = ttk.Combobox(preset_frame, textvariable=self.preset_var,
+        preset_combo = ttk.Combobox(controls_frame, textvariable=self.preset_var,
                                      values=list(SEQUENCER_PRESETS.keys()), width=16, state="readonly")
-        preset_combo.pack(anchor="w")
+        preset_combo.pack(side=tk.LEFT, padx=(4, 14))
         preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
 
-        self.hex_label = ttk.Label(preset_frame, text=self._sequencer_hex_text())
-        self.hex_label.pack(anchor="w", pady=(4, 0))
+        ttk.Button(controls_frame, text="▶ Play", command=self._open_pattern_preview).pack(side=tk.LEFT, padx=(0, 14))
 
-        ttk.Button(preset_frame, text="▶ Play", command=self._open_pattern_preview).pack(anchor="w", pady=(6, 0))
+        self.hex_label = ttk.Label(controls_frame, text=self._sequencer_hex_text())
+        self.hex_label.pack(side=tk.LEFT)
 
-        # Rotation panel (<rotation> block: only meaningful when Rotate is checked)
-        self.rotation_frame = ttk.LabelFrame(f, text="Rotation")
-        self.rotation_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
+        # Rotation | Flashiness - identical shape, since both are TimingBlocks under the hood.
+        timing_frame = ttk.Frame(f)
+        timing_frame.pack(fill=tk.X, padx=6, pady=2)
 
-        ttk.Label(self.rotation_frame, text="Speed:").grid(row=0, column=0, sticky="w", padx=4)
-        self.speed_var = tk.DoubleVar(value=light.rotation.speed)
-        speed_spin = ttk.Spinbox(self.rotation_frame, from_=0.0, to=1000.0, increment=0.1,
-                                  textvariable=self.speed_var, width=8, command=self._on_rotation_change)
-        speed_spin.grid(row=0, column=1, padx=4)
-        speed_spin.bind("<KeyRelease>", self._on_rotation_change)
-        speed_spin.bind("<FocusOut>", self._on_rotation_change)
+        self.rotation_frame = ttk.LabelFrame(timing_frame, text="Rotation")
+        self.rotation_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        (self.speed_var, self.delta_var, self.start_var,
+         self.direction_var, self.sync_var) = self._build_timing_block(
+            self.rotation_frame, light.rotation, self._on_rotation_change)
 
-        self.direction_var = tk.StringVar(value="CW" if light.rotation.direction_cw else "CCW")
-        ttk.Label(self.rotation_frame, text="Direction:").grid(row=0, column=2, sticky="w", padx=(16, 4))
-        ttk.Radiobutton(self.rotation_frame, text="CW", value="CW", variable=self.direction_var,
-                         command=self._on_rotation_change).grid(row=0, column=3)
-        ttk.Radiobutton(self.rotation_frame, text="CCW", value="CCW", variable=self.direction_var,
-                         command=self._on_rotation_change).grid(row=0, column=4)
+        self.flashiness_frame = ttk.LabelFrame(timing_frame, text="Flashiness")
+        self.flashiness_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        (self.flashiness_speed_var, self.flashiness_delta_var, self.flashiness_start_var,
+         self.flashiness_direction_var, self.flashiness_sync_var) = self._build_timing_block(
+            self.flashiness_frame, light.flashiness, self._on_flashiness_timing_change)
 
-        self.sync_var = tk.BooleanVar(value=light.rotation.sync_to_bpm)
-        ttk.Checkbutton(self.rotation_frame, text="Sync to BPM", variable=self.sync_var,
-                        command=self._on_rotation_change).grid(row=0, column=5, padx=(16, 4))
+        # Corona: intensity, size, pull.
+        corona_frame = ttk.LabelFrame(f, text="Corona")
+        corona_frame.pack(fill=tk.X, padx=6, pady=(2, 6))
+        corona_row = ttk.Frame(corona_frame)
+        corona_row.pack(padx=6, pady=6)
 
-        ttk.Label(self.rotation_frame, text="Multiples:").grid(row=0, column=6, sticky="w", padx=(16, 4))
-        self.multiples_var = tk.StringVar(value=str(light.rotation.multiples))
-        multiples_entry = ttk.Entry(self.rotation_frame, textvariable=self.multiples_var, width=4)
-        multiples_entry.grid(row=0, column=7)
-        multiples_entry.bind("<KeyRelease>", self._on_rotation_change)
+        ttk.Label(corona_row, text="Intensity:").grid(row=0, column=0, sticky="w")
+        self.corona_intensity_var = tk.DoubleVar(value=light.corona.intensity)
+        corona_intensity_spin = ttk.Spinbox(corona_row, from_=0.0, to=1000.0, increment=0.1,
+                                             textvariable=self.corona_intensity_var, width=8,
+                                             command=self._on_corona_change)
+        corona_intensity_spin.grid(row=0, column=1, padx=(4, 16))
+        corona_intensity_spin.bind("<KeyRelease>", self._on_corona_change)
+        corona_intensity_spin.bind("<FocusOut>", self._on_corona_change)
+
+        ttk.Label(corona_row, text="Size:").grid(row=0, column=2, sticky="w")
+        self.corona_size_var = tk.DoubleVar(value=light.corona.size)
+        corona_size_spin = ttk.Spinbox(corona_row, from_=0.0, to=1000.0, increment=0.1,
+                                        textvariable=self.corona_size_var, width=8, command=self._on_corona_change)
+        corona_size_spin.grid(row=0, column=3, padx=(4, 16))
+        corona_size_spin.bind("<KeyRelease>", self._on_corona_change)
+        corona_size_spin.bind("<FocusOut>", self._on_corona_change)
+
+        ttk.Label(corona_row, text="Pull:").grid(row=0, column=4, sticky="w")
+        self.corona_pull_var = tk.DoubleVar(value=light.corona.pull)
+        corona_pull_spin = ttk.Spinbox(corona_row, from_=0.0, to=1000.0, increment=0.1,
+                                        textvariable=self.corona_pull_var, width=8, command=self._on_corona_change)
+        corona_pull_spin.grid(row=0, column=5, padx=(4, 0))
+        corona_pull_spin.bind("<KeyRelease>", self._on_corona_change)
+        corona_pull_spin.bind("<FocusOut>", self._on_corona_change)
 
         self._update_rotation_enabled()
+        self._update_flashiness_enabled()
+
+    def _build_timing_block(self, parent, timing, on_change):
+        """Shared layout for the Rotation and Flashiness panels (both are TimingBlocks):
+        Delta/Start, Speed, Direction, Sync to BPM. Returns the tk variables so the
+        caller can wire them to the right on-change handler for the right block."""
+        grid = ttk.Frame(parent)
+        grid.pack(padx=6, pady=6)
+
+        ttk.Label(grid, text="Delta:").grid(row=0, column=0, sticky="w")
+        delta_var = tk.DoubleVar(value=timing.delta)
+        delta_spin = ttk.Spinbox(grid, from_=-1000.0, to=1000.0, increment=0.1,
+                                  textvariable=delta_var, width=8, command=on_change)
+        delta_spin.grid(row=0, column=1, padx=(4, 14))
+        delta_spin.bind("<KeyRelease>", on_change)
+        delta_spin.bind("<FocusOut>", on_change)
+
+        ttk.Label(grid, text="Start:").grid(row=0, column=2, sticky="w")
+        start_var = tk.DoubleVar(value=timing.start)
+        start_spin = ttk.Spinbox(grid, from_=-1000.0, to=1000.0, increment=0.1,
+                                  textvariable=start_var, width=8, command=on_change)
+        start_spin.grid(row=0, column=3, padx=(4, 0))
+        start_spin.bind("<KeyRelease>", on_change)
+        start_spin.bind("<FocusOut>", on_change)
+
+        ttk.Label(grid, text="Speed:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        speed_var = tk.DoubleVar(value=timing.speed)
+        speed_spin = ttk.Spinbox(grid, from_=0.0, to=1000.0, increment=0.1,
+                                  textvariable=speed_var, width=8, command=on_change)
+        speed_spin.grid(row=1, column=1, padx=(4, 14), pady=(6, 0))
+        speed_spin.bind("<KeyRelease>", on_change)
+        speed_spin.bind("<FocusOut>", on_change)
+
+        ttk.Label(grid, text="Direction:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        dir_frame = ttk.Frame(grid)
+        dir_frame.grid(row=2, column=1, columnspan=3, sticky="w", pady=(6, 0))
+        direction_var = tk.StringVar(value="CW" if timing.direction_cw else "CCW")
+        ttk.Radiobutton(dir_frame, text="CW", value="CW", variable=direction_var,
+                         command=on_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(dir_frame, text="CCW", value="CCW", variable=direction_var,
+                         command=on_change).pack(side=tk.LEFT, padx=(10, 0))
+
+        sync_var = tk.BooleanVar(value=timing.sync_to_bpm)
+        ttk.Checkbutton(grid, text="Sync to BPM", variable=sync_var,
+                        command=on_change).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        return speed_var, delta_var, start_var, direction_var, sync_var
 
     def _sequencer_hex_text(self) -> str:
         return f"Pattern: 0x{self.light.flashiness.sequencer:08X}"
-
-    def _on_name_change(self, event=None) -> None:
-        self.light.name = self.name_var.get()
-        self.frame.configure(text=self.light.name)
 
     def _pick_color(self) -> None:
         result = colorchooser.askcolor(initialcolor=argb_to_tk(self.light.color), title="Choose siren color")
@@ -269,7 +329,9 @@ class LightRowWidget:
         self.scale_factor_var.set(self.light.scale_factor)
         self.corona_intensity_var.set(self.light.corona.intensity)
         self.corona_size_var.set(self.light.corona.size)
+        self._update_scale_value_visibility()
         self._update_rotation_enabled()
+        self._update_flashiness_enabled()
 
     def _on_intensity_change(self, event=None) -> None:
         try:
@@ -288,7 +350,15 @@ class LightRowWidget:
             self.light.scale_factor = round(float(self.scale_factor_var.get()), 2)
         except (tk.TclError, ValueError):
             pass
+        self._update_scale_value_visibility()
         self._update_rotation_enabled()
+        self._update_flashiness_enabled()
+
+    def _update_scale_value_visibility(self) -> None:
+        if self.scale_var.get():
+            self.scale_value_frame.pack(side=tk.LEFT, padx=(0, 14), before=self._flash_check)
+        else:
+            self.scale_value_frame.pack_forget()
 
     def _on_corona_change(self, event=None) -> None:
         try:
@@ -297,6 +367,10 @@ class LightRowWidget:
             pass
         try:
             self.light.corona.size = round(float(self.corona_size_var.get()), 2)
+        except (tk.TclError, ValueError):
+            pass
+        try:
+            self.light.corona.pull = round(float(self.corona_pull_var.get()), 2)
         except (tk.TclError, ValueError):
             pass
 
@@ -392,40 +466,154 @@ class LightRowWidget:
         self._refresh_sequencer_relief()
 
     def _on_rotation_change(self, event=None) -> None:
+        self._commit_timing(self.light.rotation, self.speed_var, self.delta_var, self.start_var,
+                             self.direction_var, self.sync_var)
+
+    def _on_flashiness_timing_change(self, event=None) -> None:
+        self._commit_timing(self.light.flashiness, self.flashiness_speed_var, self.flashiness_delta_var,
+                             self.flashiness_start_var, self.flashiness_direction_var, self.flashiness_sync_var)
+
+    @staticmethod
+    def _commit_timing(timing, speed_var, delta_var, start_var, direction_var, sync_var) -> None:
         try:
-            self.light.rotation.speed = round(float(self.speed_var.get()), 3)
+            timing.speed = round(float(speed_var.get()), 3)
         except (tk.TclError, ValueError):
             pass
-        self.light.rotation.direction_cw = (self.direction_var.get() == "CW")
-        self.light.rotation.sync_to_bpm = self.sync_var.get()
         try:
-            self.light.rotation.multiples = int(self.multiples_var.get())
+            timing.delta = round(float(delta_var.get()), 3)
         except (tk.TclError, ValueError):
             pass
+        try:
+            timing.start = round(float(start_var.get()), 3)
+        except (tk.TclError, ValueError):
+            pass
+        timing.direction_cw = (direction_var.get() == "CW")
+        timing.sync_to_bpm = sync_var.get()
 
     def _update_rotation_enabled(self) -> None:
         state = "normal" if self.rotate_var.get() else "disabled"
-        for child in self.rotation_frame.winfo_children():
-            try:
-                child.configure(state=state)
-            except tk.TclError:
-                pass
+        _set_widget_state_recursive(self.rotation_frame, state)
+
+    def _update_flashiness_enabled(self) -> None:
+        state = "normal" if self.flash_var.get() else "disabled"
+        _set_widget_state_recursive(self.flashiness_frame, state)
 
     def _on_remove_click(self) -> None:
         self.on_remove(self)
 
 
+# Field specs for LightBlockWidget: (attribute, display label, kind). "color" is handled
+# separately (swatch + hex entry) since both LightBeam and LightCorona have one.
+BEAM_FIELDS = [
+    ("intensity", "Intensity", "float"),
+    ("falloff_max", "Falloff Max", "float"),
+    ("falloff_exponent", "Falloff Exponent", "float"),
+    ("inner_cone_angle", "Inner Cone Angle", "float"),
+    ("outer_cone_angle", "Outer Cone Angle", "float"),
+    ("emissive_boost", "Emissive Boost", "bool"),
+    ("texture_name", "Texture Name", "text"),
+    ("mirror_texture", "Mirror Texture", "bool"),
+]
+
+CORONA_FIELDS = [
+    ("size", "Size", "float"),
+    ("size_far", "Size (Far)", "float"),
+    ("intensity", "Intensity", "float"),
+    ("intensity_far", "Intensity (Far)", "float"),
+    ("num_coronas", "Num Coronas", "int"),
+    ("dist_between_coronas", "Dist Between", "float"),
+    ("dist_between_coronas_far", "Dist Between (Far)", "float"),
+    ("x_rotation", "X Rotation", "float"),
+    ("y_rotation", "Y Rotation", "float"),
+    ("z_rotation", "Z Rotation", "float"),
+    ("z_bias", "Z Bias", "float"),
+    ("pull_corona_in", "Pull Corona In", "bool"),
+]
+
+
+class LightBlockWidget:
+    """Generic editor for one LightBeam or LightCorona sub-block of a Light Profile.
+    Shared because both shapes repeat several times (4 beams, 6 coronas) with only
+    their field lists differing."""
+
+    def __init__(self, parent, title: str, obj, fields: list, quick_colors=None):
+        self.obj = obj
+        self.fields = fields
+        self.quick_colors = quick_colors if quick_colors is not None else list(DEFAULT_QUICK_COLORS)
+        self.frame = ttk.LabelFrame(parent, text=title)
+        self._build()
+
+    def _build(self) -> None:
+        grid = ttk.Frame(self.frame)
+        grid.pack(fill=tk.X, padx=6, pady=6)
+
+        row = 0
+        if hasattr(self.obj, "color"):
+            ttk.Label(grid, text="Color:").grid(row=row, column=0, sticky="w")
+            self.color_btn = tk.Button(grid, width=4, bg=argb_to_tk(self.obj.color),
+                                        command=self._pick_color, relief=tk.RAISED)
+            self.color_btn.grid(row=row, column=1, sticky="w", padx=(4, 10))
+            presets = ttk.Frame(grid)
+            presets.grid(row=row, column=2, columnspan=4, sticky="w")
+            for hexcol in self.quick_colors:
+                b = tk.Button(presets, bg=argb_to_tk(hexcol), width=2, relief=tk.FLAT,
+                              command=lambda c=hexcol: self._set_color(c))
+                b.pack(side=tk.LEFT, padx=1)
+            row += 1
+
+        per_row = 3
+        for i, (attr, label, kind) in enumerate(self.fields):
+            r = row + i // per_row
+            c = (i % per_row) * 2
+            ttk.Label(grid, text=f"{label}:").grid(row=r, column=c, sticky="w", padx=(0 if c == 0 else 14, 0))
+            value = getattr(self.obj, attr)
+            if kind == "bool":
+                var = tk.BooleanVar(value=value)
+                ttk.Checkbutton(grid, variable=var,
+                                command=lambda a=attr, v=var: setattr(self.obj, a, v.get())
+                                ).grid(row=r, column=c + 1, sticky="w", padx=(4, 10))
+            else:
+                var = tk.StringVar(value=str(value))
+                entry = ttk.Entry(grid, textvariable=var, width=12)
+                entry.grid(row=r, column=c + 1, sticky="w", padx=(4, 10))
+                commit = lambda e=None, a=attr, v=var, k=kind: self._commit_field(a, v, k)
+                entry.bind("<KeyRelease>", commit)
+                entry.bind("<FocusOut>", commit)
+
+    def _commit_field(self, attr: str, var, kind: str) -> None:
+        text = var.get().strip()
+        if kind == "text":
+            setattr(self.obj, attr, text)
+            return
+        try:
+            value = int(float(text)) if kind == "int" else float(text)
+        except ValueError:
+            return
+        setattr(self.obj, attr, value)
+
+    def _pick_color(self) -> None:
+        _, hex_color = colorchooser.askcolor(color=argb_to_tk(self.obj.color), title="Pick Color")
+        if hex_color:
+            normalized = normalize_argb_hex(hex_color)
+            if normalized:
+                self._set_color(normalized)
+
+    def _set_color(self, hex_value: str) -> None:
+        self.obj.color = hex_value
+        self.color_btn.configure(bg=argb_to_tk(hex_value))
+
+
 class CarcolsEditorApp:
-    BASE_TITLE = "Carcols Siren Editor (Alpha)"
+    BASE_TITLE = "Carcols Siren Editor"
 
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title(self.BASE_TITLE)
         root.geometry("1250x760")
 
-        self.settings = build_sample_settings()
+        self.settings = []
+        self.light_profiles = []
         self.raw_kits_element = None
-        self.raw_lights_element = None
         self.current_index = None
         self.current_file_path = None
         self.light_rows = []
@@ -434,6 +622,7 @@ class CarcolsEditorApp:
         self.quick_colors = list(saved_colors) if _is_valid_color_list(saved_colors) else list(DEFAULT_QUICK_COLORS)
         self.app_version = saved.get("app_version") if isinstance(saved.get("app_version"), str) else DEFAULT_APP_VERSION
         self._settings_window = None
+        self._lights_window = None
         self._update_button_shown = False
 
         self._build_menu()
@@ -452,12 +641,12 @@ class CarcolsEditorApp:
                 return
             if result is None:
                 return
-            tag_name, html_url, asset_url = result
-            self.root.after(0, lambda: self._maybe_show_update_button(tag_name, html_url, asset_url))
+            tag_name, html_url, asset_url, notes = result
+            self.root.after(0, lambda: self._maybe_show_update_button(tag_name, html_url, asset_url, notes))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _maybe_show_update_button(self, latest_tag: str, release_url: str, asset_url) -> None:
+    def _maybe_show_update_button(self, latest_tag: str, release_url: str, asset_url, notes: str = "") -> None:
         latest_version = latest_tag.lstrip("vV")
         if latest_version == self.app_version or self._update_button_shown:
             return
@@ -465,12 +654,12 @@ class CarcolsEditorApp:
 
         btn = ttk.Button(
             self.update_bar, text="Update",
-            command=lambda: self._open_update_choice_window(latest_tag, release_url, asset_url),
+            command=lambda: self._open_update_choice_window(latest_tag, release_url, asset_url, notes),
         )
         btn.pack(side=tk.LEFT, padx=8, pady=4)
         self.update_bar.pack(fill=tk.X, side=tk.TOP, before=self.paned)
 
-    def _open_update_choice_window(self, latest_tag: str, release_url: str, asset_url) -> None:
+    def _open_update_choice_window(self, latest_tag: str, release_url: str, asset_url, notes: str = "") -> None:
         win = tk.Toplevel(self.root)
         win.title("Update Available")
         win.resizable(False, False)
@@ -478,6 +667,14 @@ class CarcolsEditorApp:
         ttk.Label(win, text=f"A new version is available: {latest_tag}",
                   font=("Segoe UI", 10, "bold")).pack(padx=20, pady=(20, 4))
         ttk.Label(win, text=f"You're currently on {self.app_version}.").pack(padx=20, pady=(0, 16))
+
+        if notes:
+            notes_frame = ttk.LabelFrame(win, text="What's new")
+            notes_frame.pack(fill=tk.BOTH, padx=20, pady=(0, 16))
+            notes_box = scrolledtext.ScrolledText(notes_frame, wrap=tk.WORD, height=8, width=44)
+            notes_box.pack(fill=tk.BOTH, padx=6, pady=6)
+            notes_box.insert("1.0", notes)
+            notes_box.configure(state="disabled")
 
         button_frame = ttk.Frame(win)
         button_frame.pack(pady=(0, 8))
@@ -597,6 +794,7 @@ class CarcolsEditorApp:
         file_menu.add_command(label="Exit", command=self.root.quit)
         self.menubar.add_cascade(label="File", menu=file_menu)
         self.menubar.add_command(label="Import SirenTool", command=self.import_sirentool_file)
+        self.menubar.add_command(label="Lights", command=self.open_lights_window)
         self.menubar.add_command(label="Settings", command=self.open_settings_window)
         self.menubar.add_command(label="Version", command=self.open_version_window)
         self.root.config(menu=self.menubar)
@@ -655,20 +853,34 @@ class CarcolsEditorApp:
         lights_container.pack(fill=tk.BOTH, expand=True, padx=10)
 
         canvas = tk.Canvas(lights_container, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(lights_container, orient=tk.VERTICAL, command=canvas.yview)
+        vscrollbar = ttk.Scrollbar(lights_container, orient=tk.VERTICAL, command=canvas.yview)
+        hscrollbar = ttk.Scrollbar(lights_container, orient=tk.HORIZONTAL, command=canvas.xview)
         self.lights_frame = ttk.Frame(canvas)
 
+        # Deliberately don't force self.lights_frame to the canvas's width - that way,
+        # if the window gets narrow enough that a light row's fields would overflow, the
+        # scrollregion grows to fit them and the horizontal scrollbar can reach them,
+        # instead of the content just getting clipped off-screen with no way back to it.
         self.lights_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.lights_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.configure(yscrollcommand=vscrollbar.set, xscrollcommand=hscrollbar.set)
 
+        hscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        vscrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            if event.state & 0x0001:  # Shift held - scroll horizontally
+                canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+            else:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        # bind_all is process-wide (Tk's "all" bindtag), so any Toplevel with its own
+        # scrollable canvas (e.g. the Lights window) must restore this on close, or
+        # scrolling here breaks after visiting that window.
+        self._main_canvas = canvas
+        self._on_main_mousewheel = _on_mousewheel
 
         add_light_bar = ttk.Frame(right_frame)
         add_light_bar.pack(fill=tk.X, padx=10, pady=8)
@@ -801,8 +1013,8 @@ class CarcolsEditorApp:
             messagebox.showwarning("Import", "No siren settings were found in that file.")
             return
         self.settings = document.siren_settings
+        self.light_profiles = document.light_profiles
         self.raw_kits_element = document.raw_kits_element
-        self.raw_lights_element = document.raw_lights_element
         self.current_file_path = path
         self._refresh_settings_list()
         self._select_setting(0)
@@ -895,8 +1107,8 @@ class CarcolsEditorApp:
             return
         document = CarcolsDocument(
             siren_settings=self.settings,
+            light_profiles=self.light_profiles,
             raw_kits_element=self.raw_kits_element,
-            raw_lights_element=self.raw_lights_element,
         )
         try:
             export_carcols(document, path)
@@ -991,6 +1203,183 @@ class CarcolsEditorApp:
         ttk.Button(button_frame, text="Cancel", command=cancel).pack(side=tk.RIGHT)
 
         win.protocol("WM_DELETE_WINDOW", cancel)
+
+    def open_lights_window(self) -> None:
+        if self._lights_window is not None and self._lights_window.winfo_exists():
+            self._lights_window.lift()
+            self._lights_window.focus_force()
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Lights (Indicators / Headlights / Taillights)")
+        win.geometry("900x650")
+        self._lights_window = win
+
+        paned = ttk.Panedwindow(win, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        left_frame = ttk.Frame(paned, width=220)
+        paned.add(left_frame, weight=1)
+
+        ttk.Label(left_frame, text="Light Profiles", font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=8, pady=(8, 2))
+        ttk.Label(
+            left_frame,
+            text="Indicator/headlight/taillight setup - most vehicles have exactly one.",
+            wraplength=200,
+        ).pack(anchor="w", padx=8, pady=(0, 4))
+        listbox = tk.Listbox(left_frame, exportselection=False)
+        listbox.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+        btn_frame = ttk.Frame(left_frame)
+        btn_frame.pack(fill=tk.X, padx=8, pady=4)
+
+        right_frame = ttk.Frame(paned)
+        paned.add(right_frame, weight=4)
+
+        canvas = tk.Canvas(right_frame, highlightthickness=0)
+        vscrollbar = ttk.Scrollbar(right_frame, orient=tk.VERTICAL, command=canvas.yview)
+        hscrollbar = ttk.Scrollbar(right_frame, orient=tk.HORIZONTAL, command=canvas.xview)
+        detail_frame = ttk.Frame(canvas)
+
+        # Don't force detail_frame to the canvas's width - if the window gets narrow
+        # enough that a block's fields would overflow, the scrollregion grows to fit
+        # them and the horizontal scrollbar can reach them instead of clipping them.
+        detail_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=detail_frame, anchor="nw")
+        canvas.configure(yscrollcommand=vscrollbar.set, xscrollcommand=hscrollbar.set)
+
+        hscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        vscrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def _on_mousewheel(event):
+            if event.state & 0x0001:  # Shift held - scroll horizontally
+                canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+            else:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        state = {"index": None}
+
+        def refresh_list():
+            listbox.delete(0, tk.END)
+            for p in self.light_profiles:
+                listbox.insert(tk.END, f"[{p.id}] {p.name or '(unnamed)'}")
+
+        def render_detail(idx):
+            for child in detail_frame.winfo_children():
+                child.destroy()
+            if idx is None or idx >= len(self.light_profiles):
+                ttk.Label(detail_frame, text="No light profile selected. Click \"Add\" to create one.").pack(
+                    padx=10, pady=10)
+                return
+            profile = self.light_profiles[idx]
+
+            header = ttk.Frame(detail_frame)
+            header.pack(fill=tk.X, padx=10, pady=8)
+
+            ttk.Label(header, text="ID:").grid(row=0, column=0, sticky="w")
+            id_var = tk.StringVar(value=str(profile.id))
+            id_entry = ttk.Entry(header, textvariable=id_var, width=10)
+            id_entry.grid(row=0, column=1, sticky="w", padx=(4, 16))
+
+            def commit_id(event=None):
+                try:
+                    profile.id = int(float(id_var.get()))
+                except ValueError:
+                    return
+                refresh_list()
+
+            id_entry.bind("<KeyRelease>", commit_id)
+            id_entry.bind("<FocusOut>", commit_id)
+
+            ttk.Label(header, text="Name:").grid(row=0, column=2, sticky="w")
+            name_var = tk.StringVar(value=profile.name)
+            name_entry = ttk.Entry(header, textvariable=name_var, width=28)
+            name_entry.grid(row=0, column=3, sticky="w", padx=(4, 0))
+
+            def commit_name(event=None):
+                profile.name = name_var.get()
+                refresh_list()
+
+            name_entry.bind("<KeyRelease>", commit_name)
+
+            blocks = [
+                ("Indicator", profile.indicator, BEAM_FIELDS),
+                ("Rear Indicator Corona", profile.rear_indicator_corona, CORONA_FIELDS),
+                ("Front Indicator Corona", profile.front_indicator_corona, CORONA_FIELDS),
+                ("Tail Light", profile.tail_light, BEAM_FIELDS),
+                ("Tail Light Corona", profile.tail_light_corona, CORONA_FIELDS),
+                ("Tail Light Middle Corona", profile.tail_light_middle_corona, CORONA_FIELDS),
+                ("Head Light", profile.head_light, BEAM_FIELDS),
+                ("Head Light Corona", profile.head_light_corona, CORONA_FIELDS),
+                ("Reversing Light", profile.reversing_light, BEAM_FIELDS),
+                ("Reversing Light Corona", profile.reversing_light_corona, CORONA_FIELDS),
+            ]
+            for title, obj, fields in blocks:
+                widget = LightBlockWidget(detail_frame, title, obj, fields, quick_colors=self.quick_colors)
+                widget.frame.pack(fill=tk.X, padx=10, pady=4)
+
+        def on_select(event=None):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            state["index"] = sel[0]
+            render_detail(sel[0])
+
+        listbox.bind("<<ListboxSelect>>", on_select)
+
+        def add_profile():
+            new_id = max([p.id for p in self.light_profiles], default=0) + 1
+            self.light_profiles.append(LightProfile(id=new_id, name=f"Light Profile {new_id}"))
+            refresh_list()
+            listbox.selection_clear(0, tk.END)
+            listbox.selection_set(len(self.light_profiles) - 1)
+            on_select()
+
+        def duplicate_profile():
+            if state["index"] is None:
+                return
+            new_profile = copy.deepcopy(self.light_profiles[state["index"]])
+            new_profile.id = max(p.id for p in self.light_profiles) + 1
+            new_profile.name = f"{new_profile.name} Copy"
+            self.light_profiles.append(new_profile)
+            refresh_list()
+            listbox.selection_clear(0, tk.END)
+            listbox.selection_set(len(self.light_profiles) - 1)
+            on_select()
+
+        def remove_profile():
+            if state["index"] is None:
+                return
+            if not messagebox.askyesno("Remove Light Profile", "Remove the selected light profile?"):
+                return
+            del self.light_profiles[state["index"]]
+            state["index"] = None
+            refresh_list()
+            render_detail(None)
+
+        ttk.Button(btn_frame, text="Add", command=add_profile).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(btn_frame, text="Duplicate", command=duplicate_profile).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(btn_frame, text="Remove", command=remove_profile).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        refresh_list()
+        if self.light_profiles:
+            listbox.selection_set(0)
+            on_select()
+        else:
+            render_detail(None)
+
+        def on_close():
+            # Restore the main window's own scroll handler - see the comment where
+            # self._on_main_mousewheel is set in _build_layout.
+            self._main_canvas.bind_all("<MouseWheel>", self._on_main_mousewheel)
+            win.destroy()
+            self._lights_window = None
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
 
     def open_version_window(self) -> None:
         win = tk.Toplevel(self.root)
